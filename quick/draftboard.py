@@ -616,7 +616,11 @@ class H(BaseHTTPRequestHandler):
                 wk = int(q.get("week") or 1)
                 sl = sitstart.build_slate(did, int(rid), wk)
                 ps = sitstart.posture(sl)
-                ai = None if q.get("noai") else sitstart.ai_analyze(sl, ps)
+                import urllib.parse as _up
+                wr = [_up.unquote(x) for x in (q.get("wrcb") or "").split(",") if x]
+                if not wr and ARGS.wrcb:
+                    wr = list(ARGS.wrcb)
+                ai = None if q.get("noai") else sitstart.ai_analyze(sl, ps, wrcb=wr)
                 if path == "/api/sitstart":
                     return self._send(200, json.dumps(
                         {"slate": sl, "posture": ps, "ai": ai}, default=str))
@@ -828,6 +832,8 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--draft", default="")
     ap.add_argument("--me", default="")
+    ap.add_argument("--wrcb", action="append", default=[],
+                    help="WR/CB chart image or article URL used by /sitstart")
     ap.add_argument("--port", type=int, default=8778)
     ap.add_argument("--host", default="0.0.0.0", help="0.0.0.0 lets your phone reach it on the same wifi")
     ARGS = ap.parse_args()
