@@ -43,3 +43,26 @@ is optional; the board degrades to whatever is reachable.
 stages (merge/valuation/server/UI) were cut off by a session limit. The six
 adapters in `sources/` are finished and tested, and the board imports three of
 them (cbs, yahoo, fantasypros) opportunistically.
+
+## Python
+
+The app runs on the macOS system Python 3.9 with **zero dependencies** — that is
+deliberate and still true. Nothing below is required to use it.
+
+Homebrew Python 3.14 is now installed and on PATH (`eval "$(brew shellenv)"` was
+added to `~/.zshrc`; a backup of the original is at `~/.zshrc.bak.*`), plus a
+`.venv` with the current `anthropic` SDK for the sit/start analyzer's AI layer.
+
+### One local fix worth remembering
+
+Homebrew's `python@3.14` bottle ships a `pyexpat` linked against
+`/usr/lib/libexpat.1.dylib` at a newer version than macOS 26.2 provides. That
+breaks `pyexpat` -> `plistlib` -> `platform.mac_ver()` -> pip, which fails with
+`ValueError: invalid literal for int() with base 10: ''`. Repointed at
+Homebrew's own expat:
+
+    SO=/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/lib-dynload/pyexpat.cpython-314-darwin.so
+    install_name_tool -change /usr/lib/libexpat.1.dylib /opt/homebrew/opt/expat/lib/libexpat.1.dylib "$SO"
+    codesign -f -s - "$SO"
+
+A `brew upgrade python@3.14` will revert this until the bottle is rebuilt.
