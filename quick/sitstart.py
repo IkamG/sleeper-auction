@@ -367,9 +367,41 @@ so rather than guessing -- an honest "unknown" is worth more than a confident \
 fabrication."""
 
 
+def _sdk():
+    """The official SDK when it is importable, else None.
+
+    The app's defining property is that it runs on the macOS system Python with
+    no installs, and that Python (3.9) cannot host the current SDK. So the SDK
+    is an upgrade, never a requirement: run under .venv/bin/python and this
+    returns a client; run under /usr/bin/python3 and it returns None and the
+    raw-HTTP path below carries the same request.
+    """
+    try:
+        import anthropic
+    except ImportError:
+        return None
+    try:
+        return anthropic.Anthropic()
+    except Exception:
+        return None
+
+
+def _extract(content_blocks):
+    for blk in content_blocks:
+        btype = blk.get("type") if isinstance(blk, dict) else getattr(blk, "type", None)
+        if btype == "text":
+            txt = blk.get("text") if isinstance(blk, dict) else blk.text
+            try:
+                return json.loads(txt)
+            except ValueError:
+                return {"error": "unparseable", "detail": txt[:600]}
+    return None
+
+
 def ai_analyze(slate, pos, api_key=None):
     key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-    if not key:
+    client = _sdk()
+    if not key and not client:
         return {"error": "no_api_key",
                 "detail": "Set ANTHROPIC_API_KEY to enable the AI analysis. "
                           "Every number above is computed without it."}
@@ -391,7 +423,20 @@ def ai_analyze(slate, pos, api_key=None):
                        for p in slate["players"]],
         }, default=str)}],
     }
-    req = urllib.request.Request(
+    if client:                                   # official SDK path
+        try:
+            msg = client.messages.create(**payload)
+        except Exception as e:
+            return {"error": "sdk_error", "detail": "%s: %s" % (type(e).__name__, e)}
+        if getattr(msg, "stop_reason", None) == "refusal":
+            return {"error": "refusal", "detail": str(getattr(msg, "stop_details", None))}
+        out = _extract(msg.content)
+        if out is None:
+            return {"error": "empty_response", "detail": str(msg.stop_reason)}
+        out["_via"] = "sdk"
+        return out
+
+    req = urllib.request.Request(          # stdlib fallback, same request shape
         API_URL, data=json.dumps(payload).encode(),
         headers={"content-type": "application/json", "x-api-key": key,
                  "anthropic-version": "2023-06-01"})
@@ -404,13 +449,11 @@ def ai_analyze(slate, pos, api_key=None):
         return {"error": "request_failed", "detail": str(e)}
     if body.get("stop_reason") == "refusal":
         return {"error": "refusal", "detail": str(body.get("stop_details"))}
-    for blk in body.get("content", []):
-        if blk.get("type") == "text":
-            try:
-                return json.loads(blk["text"])
-            except ValueError:
-                return {"error": "unparseable", "detail": blk["text"][:600]}
-    return {"error": "empty_response", "detail": str(body.get("stop_reason"))}
+    out = _extract(body.get("content", []))
+    if out is None:
+        return {"error": "empty_response", "detail": str(body.get("stop_reason"))}
+    out["_via"] = "urllib"
+    return out
 
 
 # ------------------------------------------------------------------ output
