@@ -39,10 +39,13 @@ is optional; the board degrades to whatever is reachable.
 
 `quick/draftboard.py` is the working app and is self-contained.
 
-`sources/`, `sleeper_draft.py` are from a larger parallel build whose remaining
-stages (merge/valuation/server/UI) were cut off by a session limit. The six
-adapters in `sources/` are finished and tested, and the board imports three of
-them (cbs, yahoo, fantasypros) opportunistically.
+`sources/` holds ranking-source adapters from a larger parallel build whose
+remaining stages were cut off by a session limit. The board imports three of
+them opportunistically (`cbs`, `yahoo`, `fantasypros`, plus the shared
+`base`); `espn`, `ffc` and `sleeper_src` are unused, since `draftboard.py`
+carries its own fetchers for those three. They are kept because they are
+finished and tested, and are the natural place to extend if a source needs
+more depth than the inline version provides.
 
 ## Python
 
