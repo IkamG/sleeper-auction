@@ -151,6 +151,109 @@ def volatility(season=PRIOR_SEASON, weeks=18):
     return out
 
 
+def _weekly_stats(season, weeks=18):
+    """Actual weekly half-PPR results, with the opponent each was scored against."""
+    pos = "&".join("position[]=" + x for x in ("QB", "RB", "WR", "TE", "K", "DEF"))
+    out = []
+    for wk in range(1, weeks + 1):
+        try:
+            d = db.gj("https://api.sleeper.com/stats/nfl/%s/%s?season_type=regular&%s"
+                      "&order_by=pts_half_ppr" % (season, wk, pos),
+                      key="slp-stats-%s-%s" % (season, wk), ttl=86400 * 7)
+        except Exception:
+            continue
+        out.extend(d)
+    return out
+
+
+def def_vs_position(season=None, min_weeks=3):
+    """Fantasy points each defense allows, by position, computed from real results.
+
+    Not scraped from anyone's rankings -- every weekly score is attributed to the
+    defense it was scored against, so this is exactly what happened. Team-level
+    implied totals cannot answer "is this a bad matchup for a WR specifically",
+    and that is usually the actual sit/start question.
+
+    Prefers the current season and falls back to the prior one when too few
+    weeks have been played. The return value says which was used, because a
+    defense-vs-position table from last season is a much weaker signal after
+    an offseason of roster and scheme turnover.
+    """
+    for src in ([season] if season else [SEASON, PRIOR_SEASON]):
+        rows = _weekly_stats(src)
+        weeks = {r.get("week") for r in rows if r.get("week")}
+        if len(weeks) < min_weeks and src != PRIOR_SEASON:
+            continue
+        allowed, games = {}, {}
+        for r in rows:
+            opp = db.nteam(r.get("opponent"))
+            pos = db.npos(((r.get("player") or {}).get("fantasy_positions") or [None])[0])
+            pts = (r.get("stats") or {}).get("pts_half_ppr")
+            if not opp or pos not in ("QB", "RB", "WR", "TE", "K", "DEF") or pts is None:
+                continue
+            allowed.setdefault(opp, {}).setdefault(pos, 0.0)
+            allowed[opp][pos] += float(pts)
+            games.setdefault(opp, set()).add(r.get("week"))
+        table = {}
+        for team, byp in allowed.items():
+            n = max(1, len(games.get(team, ())))
+            table[team] = {pos: {"ppg": round(v / n, 1), "games": n}
+                           for pos, v in byp.items()}
+        # Rank 1 = stingiest. A rank means nothing without the scale, so the
+        # points-per-game figure travels with it.
+        for pos in ("QB", "RB", "WR", "TE", "K", "DEF"):
+            ranked = sorted((t for t in table if pos in table[t]),
+                            key=lambda t: table[t][pos]["ppg"])
+            for i, t in enumerate(ranked):
+                table[t][pos]["rank"] = i + 1
+                table[t][pos]["of"] = len(ranked)
+        if table:
+            return {"season": src, "teams": table, "weeks": len(weeks)}
+    return {"season": None, "teams": {}, "weeks": 0}
+
+
+def snap_trend(season=None):
+    """Season and recent snap share per player, plus the delta between them.
+
+    Snap share is the cleanest available read on whether a coaching staff is
+    actually using someone. A rising share ahead of a soft matchup is the
+    strongest start signal in this dataset; a falling one is the earliest
+    warning that a projection is stale.
+    """
+    for src in ([season] if season else [SEASON, PRIOR_SEASON]):
+        try:
+            txt = db.get("https://github.com/nflverse/nflverse-data/releases/download"
+                         "/snap_counts/snap_counts_%s.csv" % src,
+                         key="snaps-%s" % src, ttl=86400)
+        except Exception:
+            continue
+        import csv
+        import io as _io
+        by = {}
+        for r in csv.DictReader(_io.StringIO(txt)):
+            try:
+                pct = float(r.get("offense_pct") or 0)
+                wk = int(r.get("week") or 0)
+            except ValueError:
+                continue
+            if not r.get("player") or pct <= 0:
+                continue
+            by.setdefault(db.nname(r["player"]), []).append((wk, pct))
+        out = {}
+        for k, vals in by.items():
+            vals.sort()
+            pcts = [p for _, p in vals]
+            recent = pcts[-3:]
+            season_avg = sum(pcts) / len(pcts)
+            out[k] = {"games": len(pcts),
+                      "season_pct": round(100 * season_avg),
+                      "recent_pct": round(100 * sum(recent) / len(recent)),
+                      "trend": round(100 * (sum(recent) / len(recent) - season_avg))}
+        if out:
+            return {"season": src, "players": out}
+    return {"season": None, "players": {}}
+
+
 def injuries():
     d = db.gj("%s/injuries" % ESPN, headers=ESPN_HDRS, key="espn-inj", ttl=1800)
     out = {}
@@ -228,6 +331,8 @@ def build_slate(draft_id, roster_id, week):
     proj = week_projections(week)
     vol = volatility()
     inj = injuries()
+    dvp = def_vs_position()
+    snaps = snap_trend()
     league_id = (st["draft"] or {}).get("league_id")
     mu = league_matchup(league_id, roster_id, week) if league_id else None
 
@@ -250,6 +355,9 @@ def build_slate(draft_id, roster_id, week):
             "implied_total": ln.get("implied"),
             "opp_implied": opp_line.get("implied"),
             "volatility": vol.get(pid),
+            "dvp": ((dvp["teams"].get(ln.get("opp")) or {}).get(pk["pos"] or "")
+                    if ln.get("opp") else None),
+            "snaps": snaps["players"].get(db.nname(pk["name"] or "")),
             "injury": inj.get(db.nname(pk["name"] or "")),
             "weather": wx,
             "starting": pid in (mu or {}).get("my_starters", []),
@@ -263,6 +371,8 @@ def build_slate(draft_id, roster_id, week):
                               for x in mu["opp_players"][:9]), 1)
     return {"week": week, "season": SEASON, "roster_id": roster_id,
             "players": players, "matchup": mu,
+            "dvp_source": {"season": dvp["season"], "weeks": dvp["weeks"]},
+            "snap_source": {"season": snaps["season"]},
             "my_projected": my_total, "opp_projected": opp_total,
             "league": st["league"], "team_name": next(
                 (t["owner"] for t in st["teams"] if t["roster_id"] == roster_id), "me")}
@@ -360,6 +470,17 @@ floor, a zero is the only way to lose. Big underdog: take ceiling deliberately, 
 because a median week loses anyway. Say so plainly when it flips a call.
 - Weather matters mainly through wind above roughly 15 mph, which suppresses \
 passing and kicking. Domes are irrelevant.
+- "dvp" is how many half-PPR points that opponent allows per game to this \
+player's position, with a rank where 1 is the stingiest of 32. A team total \
+cannot tell you a defense is fine against RBs and porous against WRs; this can, \
+and that is usually the real question. Weigh it against the sample: it is \
+computed from completed games, and the payload states which season it came \
+from. A table from last season is a weak signal after an offseason of roster \
+and scheme turnover -- say so instead of leaning on it hard.
+- "snaps" is season snap share, recent (last 3 games) share, and the trend \
+between them. A rising share is the strongest start signal in this data; a \
+falling one is the earliest sign a projection is stale. Snap share for a \
+committee back matters more than his projection.
 
 Be decisive and brief. Two to four pros and cons each, one line apiece. Name the \
 single deciding factor. Where the data is thin or a projection is missing, say \
@@ -463,11 +584,14 @@ def report(slate, pos, ai=None):
          "projected %s vs opponent %s  ->  posture: %s"
          % (slate["my_projected"], slate["opp_projected"], pos["mode"].upper()),
          "  " + pos["guidance"], ""]
-    o.append("%-1s %-22s %-4s %-6s %-6s %-7s %-13s %s"
-             % ("", "PLAYER", "POS", "PROJ", "IMPL", "VS", "FLOOR/CEIL", "NOTE"))
-    o.append("-" * 92)
+    o.append("%-1s %-22s %-4s %-6s %-6s %-7s %-13s %-9s %-8s %s"
+             % ("", "PLAYER", "POS", "PROJ", "IMPL", "VS", "FLOOR/CEIL",
+                "DvP", "SNAP%", "NOTE"))
+    o.append("-" * 112)
     for p in slate["players"]:
         v = p["volatility"] or {}
+        dv = p.get("dvp") or {}
+        sn = p.get("snaps") or {}
         note = []
         if p["injury"] and p["injury"].get("status") not in (None, "Active"):
             note.append(p["injury"]["status"])
@@ -476,15 +600,22 @@ def report(slate, pos, ai=None):
             note.append("wind %smph" % wx["wind_mph"])
         if v.get("cv") and v["cv"] >= 0.65:
             note.append("volatile cv=%.2f" % v["cv"])
-        o.append("%-1s %-22s %-4s %-6s %-6s %-7s %-13s %s" % (
+        if sn.get("trend") and abs(sn["trend"]) >= 8:
+            note.append("snaps %+d%%" % sn["trend"])
+        o.append("%-1s %-22s %-4s %-6s %-6s %-7s %-13s %-9s %-8s %s" % (
             "*" if p["starting"] else "", (p["name"] or "?")[:22], p["pos"],
             p["proj"] if p["proj"] is not None else "-",
             p["implied_total"] if p["implied_total"] is not None else "-",
             ("%s%s" % ("@" if not p["home"] else "", p["opponent"] or "?")),
             "%s / %s" % (v.get("floor", "-"), v.get("ceiling", "-")),
+            ("#%s %s" % (dv["rank"], dv["ppg"]) if dv.get("rank") else "-"),
+            ("%s%%" % sn["recent_pct"] if sn.get("recent_pct") else "-"),
             ", ".join(note)))
     o.append("")
-    o.append("* = currently in your Sleeper starting lineup")
+    o.append("* = in your Sleeper starting lineup | DvP = opponent rank (1=toughest)"
+             " and pts/gm allowed to this position, from %s | SNAP%% = last 3 games, %s"
+             % (slate.get("dvp_source", {}).get("season") or "n/a",
+                slate.get("snap_source", {}).get("season") or "n/a"))
     if ai and not ai.get("error"):
         o.append("")
         o.append("=" * 92)
@@ -514,6 +645,8 @@ def html_report(slate, pos, ai=None):
     for p in slate["players"]:
         v = p["volatility"] or {}
         wx = p["weather"] or {}
+        dv = p.get("dvp") or {}
+        sn = p.get("snaps") or {}
         notes = []
         if p["injury"] and p["injury"].get("status") not in (None, "Active"):
             notes.append('<b class="mn">%s</b>' % p["injury"]["status"])
@@ -521,11 +654,15 @@ def html_report(slate, pos, ai=None):
             notes.append("wind %smph" % wx["wind_mph"])
         if v.get("cv") and v["cv"] >= 0.65:
             notes.append('<span class="vol">volatile %.2f</span>' % v["cv"])
+        if sn.get("trend") and abs(sn["trend"]) >= 8:
+            notes.append('<b class="%s">snaps %+d%%</b>'
+                         % ("pl" if sn["trend"] > 0 else "mn", sn["trend"]))
         rows.append(
             '<tr class="%s"><td>%s</td><td class="nm">%s</td>'
             '<td><span class="pos %s">%s</span></td><td class="big">%s</td>'
             '<td>%s</td><td class="mut">%s%s</td><td class="mut">%s</td>'
-            '<td class="mut">%s / %s</td><td class="mut">%s</td></tr>' % (
+            '<td class="mut">%s / %s</td><td class="%s">%s</td>'
+            '<td class="mut">%s</td><td class="mut">%s</td></tr>' % (
                 "st" if p["starting"] else "", "&#9733;" if p["starting"] else "",
                 p["name"], p["pos"], p["pos"],
                 p["proj"] if p["proj"] is not None else "&mdash;",
@@ -533,6 +670,11 @@ def html_report(slate, pos, ai=None):
                 "@" if not p["home"] else "", p["opponent"] or "?",
                 p["spread"] if p["spread"] is not None else "&mdash;",
                 v.get("floor", "&mdash;"), v.get("ceiling", "&mdash;"),
+                ("pl" if (dv.get("rank") or 99) >= 22 else
+                 "mn" if (dv.get("rank") or 0) <= 10 else "mut"),
+                ("#%s &middot; %s" % (dv["rank"], dv["ppg"])
+                 if dv.get("rank") else "&mdash;"),
+                ("%s%%" % sn["recent_pct"] if sn.get("recent_pct") else "&mdash;"),
                 " &middot; ".join(notes)))
 
     cards = ""
@@ -623,11 +765,15 @@ posture <b>__MODE__</b><div class="mut" style="margin-top:4px">__GUIDE__</div></
 <div class="wrap">
  <div class="main"><div class="panel" style="padding:0"><table>
   <thead><tr><th></th><th>Player</th><th>Pos</th><th>Proj</th><th>Team total</th>
-  <th>Opp</th><th>Spread</th><th>Floor / Ceil</th><th>Flags</th></tr></thead>
+  <th>Opp</th><th>Spread</th><th>Floor / Ceil</th><th>DvP</th><th>Snap%</th>
+  <th>Flags</th></tr></thead>
   <tbody>__ROWS__</tbody></table></div>
   <div class="mut" style="font-size:12px">&#9733; = in your Sleeper starting lineup &middot;
   <b>Team total</b> is the Vegas implied points for that player's offense &middot;
-  <b>Floor / Ceil</b> are 20th/80th percentile weekly half-PPR scores from last season</div>
+  <b>Floor / Ceil</b> are 20th/80th percentile weekly half-PPR scores &middot;
+  <b>DvP</b> is the opponent's rank (1 = toughest of 32) and half-PPR points per game
+  allowed to this position, computed from completed games &middot;
+  <b>Snap%</b> is last-3-game snap share; green/red flags a shift of 8+ points</div>
  </div>
  <div class="rail">__AI__</div>
 </div></body></html>"""
