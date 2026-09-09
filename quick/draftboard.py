@@ -606,6 +606,16 @@ class H(BaseHTTPRequestHandler):
                 out = live_board(players, st, int(rid) if rid and rid.isdigit() else None)
                 out["meta"] = POOL["meta"]
                 return self._send(200, json.dumps(out))
+            if path in ("/analysis", "/api/analysis"):
+                did = q.get("draft") or ARGS.draft
+                if not did:
+                    return self._send(400, json.dumps({"error": "no draft id"}))
+                import analyze
+                a = analyze.analyze(did, ensure_pool())
+                if path == "/api/analysis":
+                    return self._send(200, json.dumps(a, default=str))
+                return self._send(200, analyze.report(a),
+                                  "text/plain; charset=utf-8")
             if path == "/api/values":
                 return self._send(200, json.dumps({"players": ensure_pool()[:400]}))
             return self._send(404, json.dumps({"error": "not found"}))
