@@ -121,7 +121,32 @@ def pkey(name, pos, team=None):
 # ---------------------------------------------------------------- sources
 
 def src_sleeper():
-    """Backbone: native half-PPR projections + ADP + Sleeper player_id."""
+    """Backbone: native half-PPR projections + ADP + Sleeper player_id.
+
+    Prefers sources/sleeper_src.py when importable: it retries with backoff,
+    falls back to a stale cache entry when the API is unreachable, re-requests
+    per position if the combined call fails, and drops the ~2400 teamless,
+    unprojected rows Sleeper keeps in its database. This is the one source the
+    board cannot do without, so its resilience matters more than any other.
+    Falls back to the inline fetch below so the app still runs from a bare
+    checkout with only this file.
+    """
+    try:
+        from sources import sleeper_src as _ad
+        rows = _ad.fetch(SEASON, "half_ppr")
+        if rows:
+            return {r["key"]: {"key": r["key"], "name": r["name"], "pos": r["pos"],
+                               "team": r["team"], "sleeper_id": r["sleeper_id"],
+                               "proj": r["proj_pts"], "adp": r["adp"],
+                               "bye": r.get("bye")}
+                    for r in rows if r.get("key") and r.get("pos")}
+    except Exception as e:
+        print("sleeper_src adapter unavailable (%s); using inline fetch" % e,
+              file=sys.stderr)
+    return _src_sleeper_inline()
+
+
+def _src_sleeper_inline():
     pos = "&".join("position[]=" + p for p in ("QB", "RB", "WR", "TE", "K", "DEF"))
     url = ("https://api.sleeper.com/projections/nfl/%s?season_type=regular&%s"
            "&order_by=adp_half_ppr" % (SEASON, pos))
@@ -178,7 +203,30 @@ ESPN_TEAM = {0: "FA", 1: "ATL", 2: "BUF", 3: "CHI", 4: "CIN", 5: "CLE", 6: "DAL"
 
 
 def src_espn():
-    """Real auction dollars from ESPN's live market average."""
+    """Real auction dollars from ESPN's live market average.
+
+    The adapter pages far deeper (~1000 players vs ~340). That makes no
+    difference at the top of an auction board, where every player already
+    carries a market value, but it fills in the tail for deeper leagues.
+    """
+    try:
+        from sources import espn as _ad
+        rows = _ad.fetch(SEASON, "half_ppr")
+        if rows:
+            out = {}
+            for r in rows:
+                if r.get("key") and r.get("auction"):
+                    out[r["key"]] = {"auction": float(r["auction"]),
+                                     "rank": r.get("rank")}
+            if out:
+                return out
+    except Exception as e:
+        print("espn adapter unavailable (%s); using inline fetch" % e,
+              file=sys.stderr)
+    return _src_espn_inline()
+
+
+def _src_espn_inline():
     filt = ('{"players":{"limit":450,"sortDraftRanks":'
             '{"sortPriority":100,"sortAsc":true,"value":"PPR"}}}')
     d = gj("https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/%s"

@@ -39,13 +39,20 @@ is optional; the board degrades to whatever is reachable.
 
 `quick/draftboard.py` is the working app and is self-contained.
 
-`sources/` holds ranking-source adapters from a larger parallel build whose
-remaining stages were cut off by a session limit. The board imports three of
-them opportunistically (`cbs`, `yahoo`, `fantasypros`, plus the shared
-`base`); `espn`, `ffc` and `sleeper_src` are unused, since `draftboard.py`
-carries its own fetchers for those three. They are kept because they are
-finished and tested, and are the natural place to extend if a source needs
-more depth than the inline version provides.
+`sources/` holds the ranking-source adapters. `cbs`, `yahoo` and `fantasypros`
+are the only way those sources are read. `sleeper_src` and `espn` are preferred
+over the inline fetchers in `draftboard.py` when importable, and the inline
+versions remain as a fallback so a bare checkout of `quick/draftboard.py` still
+runs on its own.
+
+`sleeper_src` matters most: Sleeper is the one source the board cannot do
+without, and the adapter retries with backoff, falls back to a stale cache when
+the API is unreachable, re-requests per position if the combined call fails,
+and drops the ~2,400 teamless, unprojected rows Sleeper keeps in its database.
+The inline version does none of that and simply exits if the call fails.
+
+`ffc` stays inline: the adapter returns the same ~250 players, so there is
+nothing to gain.
 
 ## Python
 
