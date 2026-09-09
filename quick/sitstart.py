@@ -12,7 +12,9 @@ handed -- it is asked to make the judgment call that the numbers do not settle.
 import argparse
 import json
 import os
+import shutil
 import statistics
+import subprocess
 import sys
 import urllib.request
 
@@ -23,6 +25,7 @@ SEASON = "2026"
 PRIOR_SEASON = "2025"
 MODEL = "claude-opus-5"
 API_URL = "https://api.anthropic.com/v1/messages"
+CACHE_WRCB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_wrcb")
 
 # lat, lon, roof_is_closed. Weather is irrelevant indoors, so domes short-circuit.
 STADIUM = {
@@ -477,6 +480,12 @@ and that is usually the real question. Weigh it against the sample: it is \
 computed from completed games, and the payload states which season it came \
 from. A table from last season is a weak signal after an offseason of roster \
 and scheme turnover -- say so instead of leaning on it hard.
+- A WR/CB matchup chart may be supplied as an image. Its weekly matchup score \
+combines a receiver's target and yards per route run against the specific \
+cornerback projected to cover him -- a genuinely different signal from \
+defense-vs-position, which averages over a whole unit. A strongly negative \
+score against a shadow corner can outweigh a soft team ranking. Use it only \
+for receivers actually listed; the charts are partial.
 - "snaps" is season snap share, recent (last 3 games) share, and the trend \
 between them. A rising share is the strongest start signal in this data; a \
 falling one is the earliest sign a projection is stale. Snap share for a \
@@ -519,13 +528,113 @@ def _extract(content_blocks):
     return None
 
 
-def ai_analyze(slate, pos, api_key=None):
+def fetch_wrcb(sources):
+    """Download WR/CB matchup chart images for Claude to read directly.
+
+    RotoBaller publishes these as screenshots, and the underlying tool is
+    paywalled, so there is nothing to scrape and nothing worth scraping. Handing
+    the image to a model that can read it is both simpler and the only approach
+    that respects how the data is actually published. Accepts URLs or local
+    paths; returns local file paths.
+    """
+    out = []
+    for i, src in enumerate(sources or []):
+        if os.path.exists(src):
+            out.append(os.path.abspath(src))
+            continue
+        try:
+            dest = os.path.join(CACHE_WRCB, "wrcb-%d.png" % i)
+            os.makedirs(CACHE_WRCB, exist_ok=True)
+            req = urllib.request.Request(src, headers={"User-Agent": db.UA})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                data = r.read()
+            with open(dest, "wb") as fh:
+                fh.write(data)
+            out.append(dest)
+        except Exception as e:
+            print("wrcb fetch failed for %s: %s" % (src, e), file=sys.stderr)
+    return out
+
+
+def _via_cli(system, user_json, images=None, timeout=900):
+    """Run the analysis through the local Claude Code CLI in headless mode.
+
+    This uses the Claude Code subscription already installed on this machine
+    rather than a separate API credential, so the analyzer costs nothing extra
+    to run. Requires no ANTHROPIC_API_KEY. Structured output is not available
+    on this path, so the schema is described in the prompt and the reply is
+    parsed leniently.
+    """
+    img = ""
+    if images:
+        img = ("\n\nWR/CB matchup charts are at these local image paths. Read "
+               "each one and use the per-receiver rows for any of my receivers "
+               "that appear. The key column is the weekly matchup score, where "
+               "positive favours the receiver. These tables are partial -- if "
+               "one of my receivers is not shown, say his matchup is unknown "
+               "rather than guessing:\n" + "\n".join(images))
+    prompt = (system + "\n\nHere is this week's data:\n" + user_json + img +
+              "\n\nRespond with ONLY a JSON object matching this shape, no "
+              "markdown fence and no prose around it:\n" +
+              json.dumps(SCHEMA, indent=1))
+    cmd = ["claude", "-p", "--output-format", "json"]
+    if images:
+        cmd += ["--allowed-tools", "Read"]
+    try:
+        r = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
+                           timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return {"error": "cli_timeout", "detail": "claude -p exceeded %ss" % timeout}
+    except Exception as e:
+        return {"error": "cli_failed", "detail": str(e)}
+    if r.returncode != 0:
+        return {"error": "cli_error", "detail": (r.stderr or r.stdout)[:600]}
+    try:
+        body = json.loads(r.stdout)
+    except ValueError:
+        return {"error": "cli_unparseable", "detail": r.stdout[:600]}
+    if body.get("is_error"):
+        return {"error": "cli_error", "detail": str(body.get("result"))[:600]}
+    txt = (body.get("result") or "").strip()
+    if txt.startswith("```"):                       # strip a stray code fence
+        txt = txt.split("\n", 1)[-1].rsplit("```", 1)[0]
+    try:
+        out = json.loads(txt)
+    except ValueError:
+        i, j = txt.find("{"), txt.rfind("}")
+        if i < 0 or j < 0:
+            return {"error": "cli_unparseable", "detail": txt[:600]}
+        try:
+            out = json.loads(txt[i:j + 1])
+        except ValueError:
+            return {"error": "cli_unparseable", "detail": txt[:600]}
+    out["_via"] = "claude-code-cli"
+    out["_cost_usd"] = body.get("total_cost_usd")
+    return out
+
+
+def ai_analyze(slate, pos, api_key=None, wrcb=None):
     key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-    client = _sdk()
+    client = _sdk() if key else None
+    user_json = json.dumps({
+        "week": slate["week"], "team": slate["team_name"],
+        "my_projected_total": slate["my_projected"],
+        "opponent_projected_total": slate["opp_projected"],
+        "risk_posture": pos,
+        "dvp_from_season": slate.get("dvp_source", {}).get("season"),
+        "snaps_from_season": slate.get("snap_source", {}).get("season"),
+        "roster": [{k: v for k, v in p.items() if k != "id"}
+                   for p in slate["players"]],
+    }, default=str)
+    # No API key but Claude Code is installed: use the subscription already here.
+    images = fetch_wrcb(wrcb)
+    if not key and shutil.which("claude"):
+        return _via_cli(SYSTEM, user_json, images)
     if not key and not client:
         return {"error": "no_api_key",
-                "detail": "Set ANTHROPIC_API_KEY to enable the AI analysis. "
-                          "Every number above is computed without it."}
+                "detail": "Set ANTHROPIC_API_KEY, or install Claude Code to use "
+                          "your existing subscription. Every number above is "
+                          "computed without either."}
     payload = {
         "model": MODEL,
         "max_tokens": 16000,
@@ -535,14 +644,7 @@ def ai_analyze(slate, pos, api_key=None):
         # The rules never change week to week; cache them and pay only for the slate.
         "system": [{"type": "text", "text": SYSTEM,
                     "cache_control": {"type": "ephemeral"}}],
-        "messages": [{"role": "user", "content": json.dumps({
-            "week": slate["week"], "team": slate["team_name"],
-            "my_projected_total": slate["my_projected"],
-            "opponent_projected_total": slate["opp_projected"],
-            "risk_posture": pos,
-            "roster": [{k: v for k, v in p.items() if k != "id"}
-                       for p in slate["players"]],
-        }, default=str)}],
+        "messages": [{"role": "user", "content": user_json}],
     }
     if client:                                   # official SDK path
         try:
@@ -785,11 +887,13 @@ if __name__ == "__main__":
     ap.add_argument("--me", type=int, required=True)
     ap.add_argument("--week", type=int, default=1)
     ap.add_argument("--no-ai", action="store_true")
+    ap.add_argument("--wrcb", action="append", default=[],
+                    help="URL or path to a WR/CB matchup chart image (repeatable)")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
     sl = build_slate(args.draft, args.me, args.week)
     ps = posture(sl)
-    ai = None if args.no_ai else ai_analyze(sl, ps)
+    ai = None if args.no_ai else ai_analyze(sl, ps, wrcb=args.wrcb)
     if args.json:
         print(json.dumps({"slate": sl, "posture": ps, "ai": ai}, indent=1, default=str))
     else:
