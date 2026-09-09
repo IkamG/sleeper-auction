@@ -5,6 +5,7 @@ import json
 import os
 import re
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 
@@ -59,7 +60,12 @@ _SUFFIX_RE = re.compile(r"\b(jr|sr|ii|iii|iv|v)\b")
 _NONWORD_RE = re.compile(r"[^a-z0-9 ]")
 _WS_RE = re.compile(r"\s+")
 
-# Cross-source nickname collisions we resolve by hand.
+# Cross-source nickname collisions we resolve by hand. MUST stay identical to
+# quick/draftboard.NAME_FIXES -- the board joins adapter keys built here against
+# a spine keyed by draftboard.pkey(), so any divergence silently drops a source.
+# NOTE: "kenneth walker iii" / "brian robinson jr" are unreachable, because
+# _SUFFIX_RE already strips the suffix before this lookup runs. Kept verbatim so
+# the two tables stay diffable.
 _NAME_FIXES = {
     "mitch trubisky": "mitchell trubisky",
     "gabe davis": "gabriel davis",
@@ -70,6 +76,10 @@ _NAME_FIXES = {
     "hollywood brown": "marquise brown",
     "kenneth walker iii": "kenneth walker",
     "brian robinson jr": "brian robinson",
+    # Sources that print the legal name where Sleeper prints the nickname.
+    "kenneth gainwell": "kenny gainwell",
+    "christopher brooks": "chris brooks",
+    "andres borregales": "andy borregales",
 }
 
 
@@ -93,6 +103,10 @@ def norm_name(name):
         return ""
     n = str(name).lower().strip()
     n = n.replace("&", " and ")
+    # Fold accents to their ASCII letter before _NONWORD_RE runs, or the letter
+    # becomes a space and the name splits ("eddy pi eiro" vs "eddy pineiro").
+    n = unicodedata.normalize("NFKD", n)
+    n = "".join(c for c in n if not unicodedata.combining(c))
     n = _NONWORD_RE.sub(" ", n)
     n = _WS_RE.sub(" ", n).strip()
     n = _SUFFIX_RE.sub("", n)

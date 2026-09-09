@@ -14,6 +14,7 @@ import statistics
 import sys
 import threading
 import time
+import unicodedata
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -51,6 +52,22 @@ def gj(url, headers=None, key=None, ttl=1800):
 
 SUF = re.compile(r"\b(jr|sr|ii|iii|iv)\b")
 NW = re.compile(r"[^a-z0-9 ]")
+
+# Cross-source spelling variants. MUST stay identical to sources/base._NAME_FIXES
+# or adapter keys (built by base.player_key) cannot join the Sleeper spine.
+NAME_FIXES = {
+    "mitch trubisky": "mitchell trubisky",
+    "gabe davis": "gabriel davis",
+    "josh palmer": "joshua palmer",
+    "chig okonkwo": "chigoziem okonkwo",
+    "cam ward": "cameron ward",
+    "tank dell": "nathaniel dell",
+    "hollywood brown": "marquise brown",
+    # Sources that print the legal name where Sleeper prints the nickname.
+    "kenneth gainwell": "kenny gainwell",
+    "christopher brooks": "chris brooks",
+    "andres borregales": "andy borregales",
+}
 TEAMS = {
     "cardinals": "ARI", "falcons": "ATL", "ravens": "BAL", "bills": "BUF",
     "panthers": "CAR", "bears": "CHI", "bengals": "CIN", "browns": "CLE",
@@ -77,10 +94,15 @@ def nteam(t):
 
 
 def nname(n):
-    n = NW.sub(" ", (n or "").lower())
+    # Fold accents to their ASCII letter FIRST. NW would otherwise turn the
+    # letter into a space and split the name: FFC ships "Eddy Pineiro" with a
+    # tilde, Sleeper ships it without, and "eddy pi eiro" != "eddy pineiro".
+    n = unicodedata.normalize("NFKD", (n or "").lower())
+    n = "".join(c for c in n if not unicodedata.combining(c))
+    n = NW.sub(" ", n)
     n = re.sub(r"\s+", " ", n).strip()
     n = re.sub(r"\s+", " ", SUF.sub("", n)).strip()
-    return n
+    return NAME_FIXES.get(n, n)
 
 
 def pkey(name, pos, team=None):
@@ -107,8 +129,11 @@ def src_sleeper():
     for row in gj(url, key="slp-proj-half", ttl=3600):
         st = row.get("stats") or {}
         pl = row.get("player") or {}
-        p = npos((pl.get("fantasy_positions") or [None])[0])
-        if p not in ("QB", "RB", "WR", "TE", "K", "DEF"):
+        # Take the first FANTASY-RELEVANT position, not blindly index 0:
+        # Travis Hunter is ["DB","WR"] and index 0 would drop him off the board.
+        p = next((q for q in (npos(x) for x in (pl.get("fantasy_positions") or []))
+                  if q in ("QB", "RB", "WR", "TE", "K", "DEF")), None)
+        if p is None:
             continue
         pid = str(row.get("player_id") or pl.get("player_id") or "")
         nm = (" ".join(filter(None, [pl.get("first_name"), pl.get("last_name")]))).strip()
@@ -225,12 +250,13 @@ def build_pool():
     for k, p in sl.items():
         f, e = ffc.get(k, {}), espn.get(k, {})
         x = {n: d[k] for n, d in extra.items() if k in d}
+        sleeper_adp = p.get("adp")          # capture before the median overwrites it
         # Median across sources, not mean: one bad scraper cannot move the board.
-        adps = [a for a in [p.get("adp"), f.get("adp")] + [v.get("adp") for v in x.values()] if a]
+        adps = [a for a in [sleeper_adp, f.get("adp")] + [v.get("adp") for v in x.values()] if a]
         p["adp"] = round(statistics.median(adps), 1) if adps else None
         aucs = [a for a in [e.get("auction")] + [v.get("auction") for v in x.values()] if a]
         p["market"] = round(statistics.median(aucs), 1) if aucs else None
-        p["adp_by"] = dict([("sleeper", p.get("adp")), ("ffc", f.get("adp"))] +
+        p["adp_by"] = dict([("sleeper", sleeper_adp), ("ffc", f.get("adp"))] +
                            [(n, v.get("adp")) for n, v in x.items()])
         p["stdev"] = f.get("stdev")
         p["bye"] = f.get("bye")
@@ -319,17 +345,29 @@ def value_pool(players, lg=LEAGUE):
         if p["pos"] in ("K", "DEF"):
             p["vorp"] = 0.0
 
-    top = sorted(players, key=lambda x: -x["vorp"])[:pool_size]
+    # K/DEF are forced to $1 below, so they never compete for the priced pool.
+    # Only pool_size - n_forced roster spots are actually available to priced
+    # players; normalising over pool_size instead spreads the surplus across
+    # ~n_forced extra players who will never be rostered, and that money leaks
+    # out of the board (0.1% here, 1.4% in a shallow-roster league).
+    n_forced = teams * (slots.get("K", 0) + slots.get("DEF", 0))
+    n_priced = max(1, pool_size - n_forced)
+    priced = [p for p in players if p["pos"] not in ("K", "DEF")]
+    surplus = total_dollars - pool_size
+
+    top = sorted(priced, key=lambda x: -x["vorp"])[:n_priced]
     tot_vorp = sum(p["vorp"] for p in top) or 1.0
-    dpv = (total_dollars - pool_size) / tot_vorp
+    dpv = surplus / tot_vorp
     for p in players:
         p["model"] = 1.0 + p["vorp"] * dpv
 
-    # Rescale market dollars onto this league's pool before blending.
-    mk = sorted([p for p in players if p.get("market")],
-                key=lambda x: -(x["market"] or 0))[:pool_size]
+    # Rescale market dollars onto this league's pool before blending. Target the
+    # same total the model column carries over the same n_priced players, so the
+    # W_MODEL/W_MARKET blend is a true 55/45 and not a scale mismatch.
+    mk = sorted([p for p in priced if p.get("market")],
+                key=lambda x: -(x["market"] or 0))[:n_priced]
     msum = sum(p["market"] for p in mk) or 1.0
-    scale = float(total_dollars) / msum
+    scale = float(n_priced + surplus) / msum
     for p in players:
         p["market_adj"] = round(p["market"] * scale, 1) if p.get("market") else None
         if p["pos"] in ("K", "DEF"):
@@ -339,12 +377,17 @@ def value_pool(players, lg=LEAGUE):
         else:
             p["base"] = p["model"]
 
-    # Renormalise so the board still sums to the pool after blending.
-    top = sorted(players, key=lambda x: -x["base"])[:pool_size]
+    # Renormalise so the board still sums to the pool after blending. The board
+    # a room actually buys is the top n_priced skill players plus n_forced K/DEF
+    # at $1, and that is what has to add up to total_dollars.
+    top = sorted(priced, key=lambda x: -x["base"])[:n_priced]
     s = sum(max(0.0, p["base"] - 1) for p in top) or 1.0
-    adj = (total_dollars - pool_size) / s
+    adj = surplus / s
     for p in players:
-        p["base"] = round(1 + max(0.0, p["base"] - 1) * adj, 1)
+        # Never price a roster spot below the $1 minimum the surplus already
+        # reserved for it; a budget too small to cover pool_size would otherwise
+        # drive adj negative and print negative dollars.
+        p["base"] = max(1.0, round(1 + max(0.0, p["base"] - 1) * adj, 1))
         if p["pos"] in ("K", "DEF"):
             p["base"] = 1.0
 
@@ -426,7 +469,8 @@ def draft_state(draft_id, lg=LEAGUE):
         teams.append({"roster_id": rid, "owner": owners.get(rid, "Team %d" % rid),
                       "spent": spent, "left": left, "filled": len(mine),
                       "slots_left": sl,
-                      "max_bid": max(0, left - max(0, sl - 1)),
+                      # A full roster cannot bid at all, however much is left.
+                      "max_bid": 0 if sl <= 0 else max(0, left - (sl - 1)),
                       "roster": [{"name": r["name"], "pos": r["pos"],
                                   "amount": r["amount"]} for r in mine]})
     return {"draft": d, "league": league, "status": d.get("status"),
@@ -452,8 +496,14 @@ def live_board(players, state, my_rid=None):
 
     me = next((t for t in teams if t["roster_id"] == my_rid), None)
     my_max = me["max_bid"] if me else None
+    # Endgame guard: once the room is out of discretionary money the 0.3 clamp
+    # still prints double-digit prices nobody can pay (measured: $21.9 on the
+    # best player left when the highest max_bid in the league was $5). No player
+    # can go for more than the richest single team can bid.
+    room_max = max([t["max_bid"] for t in teams] or [0])
     for p in avail:
-        p["live"] = round(1 + max(0.0, p["base"] - 1) * infl, 1)
+        live = round(1 + max(0.0, p["base"] - 1) * infl, 1)
+        p["live"] = max(1.0, min(live, float(room_max))) if room_max else 1.0
         p["edge"] = round(p["live"] - p["market_adj"], 1) if p.get("market_adj") else None
 
     # What the room is actually paying vs model, by position.
@@ -545,6 +595,13 @@ class H(BaseHTTPRequestHandler):
                     return self._send(400, json.dumps({"error": "no draft id"}))
                 players = ensure_pool()
                 st = draft_state(did)
+                if not st["is_auction"]:
+                    return self._send(400, json.dumps({
+                        "error": "not an auction draft",
+                        "detail": "Draft %s is type '%s'. This board prices auction "
+                                  "bids; a snake draft has no dollar amounts, so the "
+                                  "values would be meaningless." % (
+                                      did, (st["draft"] or {}).get("type"))}))
                 rid = q.get("me")
                 out = live_board(players, st, int(rid) if rid and rid.isdigit() else None)
                 out["meta"] = POOL["meta"]
