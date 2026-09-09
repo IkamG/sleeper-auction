@@ -12,6 +12,7 @@ handed -- it is asked to make the judgment call that the numbers do not settle.
 import argparse
 import json
 import os
+import re
 import shutil
 import statistics
 import subprocess
@@ -241,20 +242,45 @@ def snap_trend(season=None):
                 continue
             if not r.get("player") or pct <= 0:
                 continue
-            by.setdefault(db.nname(r["player"]), []).append((wk, pct))
+            by.setdefault(db.nname(r["player"]), []).append(
+                (wk, pct, db.nteam(r.get("team"))))
         out = {}
         for k, vals in by.items():
             vals.sort()
-            pcts = [p for _, p in vals]
+            pcts = [p for _, p, _ in vals]
             recent = pcts[-3:]
             season_avg = sum(pcts) / len(pcts)
             out[k] = {"games": len(pcts),
                       "season_pct": round(100 * season_avg),
                       "recent_pct": round(100 * sum(recent) / len(recent)),
-                      "trend": round(100 * (sum(recent) / len(recent) - season_avg))}
+                      "trend": round(100 * (sum(recent) / len(recent) - season_avg)),
+                      "earned_on": vals[-1][2]}
         if out:
             return {"season": src, "players": out}
     return {"season": None, "players": {}}
+
+
+def depth_charts():
+    """Current depth-chart slot per player, from Sleeper's live player database.
+
+    Historical snap share is backward-looking and, for anyone who changed teams,
+    describes a role that no longer exists. Depth-chart order is the opposite:
+    current team, current season. depth_chart_position also distinguishes slot
+    (SWR) from outside (LWR/RWR), which is exactly the split that decides
+    whether a WR/CB matchup applies to a given receiver.
+    """
+    try:
+        d = db.gj("https://api.sleeper.app/v1/players/nfl",
+                  key="slp-players", ttl=86400)
+    except Exception:
+        return {}
+    out = {}
+    for pid, p in d.items():
+        if p.get("depth_chart_order") and p.get("team"):
+            out[str(pid)] = {"order": p["depth_chart_order"],
+                             "slot": p.get("depth_chart_position"),
+                             "team": db.nteam(p.get("team"))}
+    return out
 
 
 def injuries():
@@ -320,6 +346,22 @@ def league_matchup(league_id, roster_id, week):
 
 # ------------------------------------------------------------------ slate
 
+def _snaps_for(snaps, name, current_team):
+    """Snap history, flagged when it was earned on a different team.
+
+    A player who changed teams carries a snap share that describes a role he no
+    longer has. Left in place because the raw usage is still informative, but
+    marked so neither the UI nor the model reads it as current.
+    """
+    v = snaps["players"].get(db.nname(name or ""))
+    if not v:
+        return None
+    v = dict(v)
+    earned = v.get("earned_on")
+    v["team_changed"] = bool(earned and current_team and earned != current_team)
+    return v
+
+
 def build_slate(draft_id, roster_id, week):
     """Assemble every fact about my roster for this week. No LLM involved."""
     pool = db.value_pool(db.build_pool()[0])
@@ -336,6 +378,7 @@ def build_slate(draft_id, roster_id, week):
     inj = injuries()
     dvp = def_vs_position()
     snaps = snap_trend()
+    depth = depth_charts()
     league_id = (st["draft"] or {}).get("league_id")
     mu = league_matchup(league_id, roster_id, week) if league_id else None
 
@@ -360,7 +403,8 @@ def build_slate(draft_id, roster_id, week):
             "volatility": vol.get(pid),
             "dvp": ((dvp["teams"].get(ln.get("opp")) or {}).get(pk["pos"] or "")
                     if ln.get("opp") else None),
-            "snaps": snaps["players"].get(db.nname(pk["name"] or "")),
+            "snaps": _snaps_for(snaps, pk["name"], team),
+            "depth": depth.get(pid),
             "injury": inj.get(db.nname(pk["name"] or "")),
             "weather": wx,
             "starting": pid in (mu or {}).get("my_starters", []),
@@ -486,6 +530,13 @@ cornerback projected to cover him -- a genuinely different signal from \
 defense-vs-position, which averages over a whole unit. A strongly negative \
 score against a shadow corner can outweigh a soft team ranking. Use it only \
 for receivers actually listed; the charts are partial.
+- "depth" is the CURRENT depth-chart order (1 = first on the chart) and slot on \
+the player's present team, so unlike snap history it is never stale. \
+depth_chart_position distinguishes slot (SWR) from outside (LWR/RWR); a WR/CB \
+chart entry applies to an outside receiver far more cleanly than to a slot one.
+- "snaps" carries "team_changed": when true the player has since moved, so that \
+usage describes a role on a different roster. Say so and lean on depth and \
+projection instead; do not present it as current.
 - "snaps" is season snap share, recent (last 3 games) share, and the trend \
 between them. A rising share is the strongest start signal in this data; a \
 falling one is the earliest sign a projection is stale. Snap share for a \
@@ -528,6 +579,63 @@ def _extract(content_blocks):
     return None
 
 
+_WP_SIZE = re.compile(r"-\d+x\d+(?=\.(?:png|jpe?g)$)", re.I)
+_IMG_RE = re.compile(r"https://[^\"' >]+/wp-content/uploads/[^\"' >]+\.(?:png|jpe?g)", re.I)
+
+
+def wrcb_from_article(url):
+    """Pull every chart image off a WR/CB matchups article.
+
+    WordPress emits a family of resized copies per upload (-300x167, -1220x677,
+    ...). Strip the size suffix to collapse them and keep the full-size
+    original, then keep only images actually shaped like a data table -- the
+    page is mostly ads and thumbnails.
+    """
+    try:
+        html = db.get(url, headers={"User-Agent": db.UA},
+                      key="wrcb-art-" + re.sub(r"\W+", "-", url)[-60:], ttl=3600)
+    except Exception as e:
+        print("wrcb article fetch failed: %s" % e, file=sys.stderr)
+        return []
+    originals = {}
+    for u in _IMG_RE.findall(html):
+        originals.setdefault(_WP_SIZE.sub("", u), set()).add(u)
+    out = []
+    for base in sorted(originals):
+        out.append(base if base in originals[base] else sorted(originals[base])[-1])
+    return out
+
+
+def _is_chart(path, min_w=900, min_h=180):
+    """Keep images shaped like a table. PNG/JPEG header read, no dependencies."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(32)
+            if head[:8] == b"\x89PNG\r\n\x1a\n":
+                w = int.from_bytes(head[16:20], "big")
+                h = int.from_bytes(head[20:24], "big")
+                return w >= min_w and h >= min_h
+            if head[:2] == b"\xff\xd8":          # JPEG: walk the segments
+                fh.seek(2)
+                while True:
+                    b = fh.read(1)
+                    if not b:
+                        return False
+                    if b != b"\xff":
+                        continue
+                    m = fh.read(1)
+                    if m in (b"\xc0", b"\xc1", b"\xc2"):
+                        fh.read(3)
+                        h = int.from_bytes(fh.read(2), "big")
+                        w = int.from_bytes(fh.read(2), "big")
+                        return w >= min_w and h >= min_h
+                    ln = int.from_bytes(fh.read(2), "big")
+                    fh.seek(ln - 2, 1)
+    except Exception:
+        return False
+    return False
+
+
 def fetch_wrcb(sources):
     """Download WR/CB matchup chart images for Claude to read directly.
 
@@ -537,22 +645,36 @@ def fetch_wrcb(sources):
     that respects how the data is actually published. Accepts URLs or local
     paths; returns local file paths.
     """
+    expanded = []
+    for src in sources or []:
+        # An article URL fans out into every chart image on the page.
+        if not os.path.exists(src) and "/wp-content/uploads/" not in src \
+                and src.startswith("http"):
+            expanded.extend(wrcb_from_article(src))
+        else:
+            expanded.append(src)
     out = []
-    for i, src in enumerate(sources or []):
+    for i, src in enumerate(expanded):
         if os.path.exists(src):
             out.append(os.path.abspath(src))
             continue
         try:
-            dest = os.path.join(CACHE_WRCB, "wrcb-%d.png" % i)
+            ext = ".jpg" if src.lower().rsplit(".", 1)[-1] in ("jpg", "jpeg") else ".png"
+            dest = os.path.join(CACHE_WRCB, "wrcb-%d%s" % (i, ext))
             os.makedirs(CACHE_WRCB, exist_ok=True)
             req = urllib.request.Request(src, headers={"User-Agent": db.UA})
             with urllib.request.urlopen(req, timeout=60) as r:
                 data = r.read()
             with open(dest, "wb") as fh:
                 fh.write(data)
-            out.append(dest)
+            if _is_chart(dest):
+                out.append(dest)
+            else:
+                os.remove(dest)
         except Exception as e:
             print("wrcb fetch failed for %s: %s" % (src, e), file=sys.stderr)
+    if out:
+        print("wrcb: %d chart image(s)" % len(out), file=sys.stderr)
     return out
 
 
@@ -702,8 +824,14 @@ def report(slate, pos, ai=None):
             note.append("wind %smph" % wx["wind_mph"])
         if v.get("cv") and v["cv"] >= 0.65:
             note.append("volatile cv=%.2f" % v["cv"])
-        if sn.get("trend") and abs(sn["trend"]) >= 8:
+        if sn.get("team_changed"):
+            note.append("snaps were on %s" % sn.get("earned_on"))
+        elif sn.get("trend") and abs(sn["trend"]) >= 8:
             note.append("snaps %+d%%" % sn["trend"])
+        dp = p.get("depth") or {}
+        if dp.get("order"):
+            note.append("depth %s%s" % (dp["order"],
+                                        "/" + dp["slot"] if dp.get("slot") else ""))
         o.append("%-1s %-22s %-4s %-6s %-6s %-7s %-13s %-9s %-8s %s" % (
             "*" if p["starting"] else "", (p["name"] or "?")[:22], p["pos"],
             p["proj"] if p["proj"] is not None else "-",
@@ -756,9 +884,15 @@ def html_report(slate, pos, ai=None):
             notes.append("wind %smph" % wx["wind_mph"])
         if v.get("cv") and v["cv"] >= 0.65:
             notes.append('<span class="vol">volatile %.2f</span>' % v["cv"])
-        if sn.get("trend") and abs(sn["trend"]) >= 8:
+        if sn.get("team_changed"):
+            notes.append('<b class="vol">snaps were on %s</b>' % sn.get("earned_on"))
+        elif sn.get("trend") and abs(sn["trend"]) >= 8:
             notes.append('<b class="%s">snaps %+d%%</b>'
                          % ("pl" if sn["trend"] > 0 else "mn", sn["trend"]))
+        dp = p.get("depth") or {}
+        if dp.get("order"):
+            notes.append("depth %s%s" % (dp["order"],
+                                         "/" + dp["slot"] if dp.get("slot") else ""))
         rows.append(
             '<tr class="%s"><td>%s</td><td class="nm">%s</td>'
             '<td><span class="pos %s">%s</span></td><td class="big">%s</td>'
