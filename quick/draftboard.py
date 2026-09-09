@@ -634,6 +634,11 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8">
 *{box-sizing:border-box}
 body{margin:0;background:#0d1117;color:#e6edf3;font:14px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
  font-variant-numeric:tabular-nums}
+.nav{display:flex;gap:2px;align-items:center;padding:0 14px;background:#0b0f14;border-bottom:1px solid #30363d}
+.nav a{padding:11px 15px;color:#8b949e;text-decoration:none;font-size:13px;font-weight:600;border-bottom:2px solid transparent}
+.nav a:hover{color:#e6edf3}
+.nav a.on{color:#fff;border-bottom-color:#1f6feb}
+.navsp{flex:1}.navmut{color:#8b949e;font-size:12px}
 .bar{display:flex;gap:18px;align-items:center;padding:10px 16px;background:#161b22;border-bottom:1px solid #30363d;
  position:sticky;top:0;z-index:20;flex-wrap:wrap}
 .bar b{font-size:19px;color:#fff}
@@ -677,6 +682,12 @@ tr.poor{opacity:.34}
 .cliff{color:#f85149;font-weight:600}
 #err{display:none;padding:9px 16px;background:#3a1518;color:#f85149;font-size:13px}
 </style></head><body>
+<div class="nav"><a href="#" data-p="/" id="nav-board">Draft board</a>
+<a href="#" data-p="/analysis" id="nav-analysis">Analysis</a>
+<span class="navsp"></span><span class="navmut" id="nav-league"></span></div>
+<script>(function(){var qs=location.search||'';
+document.querySelectorAll('.nav a').forEach(function(a){a.href=a.dataset.p+qs;
+  if(location.pathname===a.dataset.p)a.className='on';});})();</script>
 <div class="bar">
   <b id="dn">—</b>
   <div class="stat">My budget<span id="mb">—</span></div>
@@ -720,6 +731,7 @@ async function poll(){
 function render(){
   if(!D) return;
   $('#dn').textContent=D.name+'  ·  '+D.status;
+  var nl=$('#nav-league'); if(nl) nl.textContent=D.name;
   const me=(D.teams||[]).find(t=>t.roster_id===D.my_roster_id);
   $('#mb').textContent=me?money(me.left):'—';
   $('#mx').textContent=me?money(me.max_bid):'—';

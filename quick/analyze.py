@@ -295,6 +295,11 @@ TPL = r"""<!doctype html><html><head><meta charset="utf-8">
 <title>Draft Analysis</title><style>
 *{box-sizing:border-box}
 body{margin:0;background:#0d1117;color:#e6edf3;font:14px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-variant-numeric:tabular-nums}
+.nav{display:flex;gap:2px;align-items:center;padding:0 14px;background:#0b0f14;border-bottom:1px solid #30363d}
+.nav a{padding:11px 15px;color:#8b949e;text-decoration:none;font-size:13px;font-weight:600;border-bottom:2px solid transparent}
+.nav a:hover{color:#e6edf3}
+.nav a.on{color:#fff;border-bottom-color:#1f6feb}
+.navsp{flex:1}.navmut{color:#8b949e;font-size:12px}
 .hd{padding:18px 20px;background:#161b22;border-bottom:1px solid #30363d}
 .hd h1{margin:0;font-size:21px}.hd .mut{margin-top:4px;font-size:13px}
 .wrap{display:flex;gap:16px;padding:16px 20px;align-items:flex-start;flex-wrap:wrap}
@@ -322,6 +327,12 @@ td{padding:8px;text-align:right;border-bottom:1px solid #21262d;white-space:nowr
 .hint{padding:0 20px 4px;color:#8b949e;font-size:12px}
 @media(max-width:900px){.rail{flex:1 1 100%}}
 </style></head><body>
+<div class="nav"><a href="#" data-p="/" id="nav-board">Draft board</a>
+<a href="#" data-p="/analysis" id="nav-analysis">Analysis</a>
+<span class="navsp"></span><span class="navmut" id="nav-league"></span></div>
+<script>(function(){var qs=location.search||'';
+document.querySelectorAll('.nav a').forEach(function(a){a.href=a.dataset.p+qs;
+  if(location.pathname===a.dataset.p)a.className='on';});})();</script>
 <div class="hd"><h1>__NAME__ &mdash; draft analysis</h1><div class="mut">__SUB__</div></div>
 <div class="hint">Click any team for its full roster breakdown. <b>vs Room</b> grades against
 what this league actually paid, not the model &mdash; the model runs rich at the top of the board.</div>
