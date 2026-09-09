@@ -116,6 +116,9 @@ def analyze(draft_id, players=None):
             list, {k: [x for x in rows if x["roster_id"] == k]
                    for k in {x["roster_id"] for x in rows}}).items()):
         start = best_lineup([x["_p"] for x in mine])
+        sids = {id(p) for p in start}
+        for x in mine:
+            x["starter"] = id(x["_p"]) in sids
         spent = sum(x["paid"] for x in mine)
         teams.append({
             "roster_id": rid, "owner": owners.get(rid, "Team %d" % rid),
@@ -155,6 +158,31 @@ def analyze(draft_id, players=None):
             "totals": {"spent": sum(x["paid"] for x in rows), "picks": len(rows),
                        "pool": st["league"]["teams"] * st["league"]["budget"]},
             "name": st["name"], "status": st["status"]}
+
+
+def team_detail(a, owner):
+    """Full per-player breakdown for one team."""
+    t = next((x for x in a["teams"] if x["owner"].lower() == owner.lower()), None)
+    if not t:
+        return "No team named %r. Teams: %s" % (
+            owner, ", ".join(x["owner"] for x in a["teams"]))
+    o = ["%s — rank %d of %d, grade %s" % (t["owner"], t["rank"], len(a["teams"]), t["grade"]),
+         "$%d spent on %d players | value acquired $%.1f (market) / $%.1f (room)"
+         % (t["spent"], t["n"], t["model_value"], t["room_value"]),
+         "surplus %+.1f vs market, %+.1f vs room | starting lineup %.1f projected pts"
+         % (t["surplus_mkt"], t["surplus_room"], t["starter_pts"]), "",
+         "%-2s %-24s %-4s %-6s %-8s %-8s %-8s %-7s" %
+         ("", "PLAYER", "POS", "PAID", "MARKET", "ROOM", "VS ROOM", "PROJ"),
+         "-" * 74]
+    for x in t["picks"]:
+        o.append("%-2s %-24s %-4s $%-5d $%-7.1f $%-7.1f %+-8.1f %.0f" %
+                 ("*" if x["starter"] else " ", x["name"], x["pos"], x["paid"],
+                  x["model"], x["room"], x["edge_room"], x["proj"]))
+    o.append("")
+    o.append("(* = starts in the optimal lineup)")
+    o.append("spend by position: " + "  ".join(
+        "%s $%d" % (k, v) for k, v in t["spend"].items() if v))
+    return "\n".join(o)
 
 
 def report(a):
@@ -197,12 +225,138 @@ def report(a):
     return "\n".join(o)
 
 
+GRADE_COLOR = {"A+": "#3fb950", "A": "#3fb950", "A-": "#56d364", "B+": "#79c0ff",
+               "B": "#79c0ff", "B-": "#58a6ff", "C+": "#e3b341", "C": "#e3b341",
+               "C-": "#d29922", "D+": "#f85149", "D": "#f85149", "F": "#f85149"}
+
+
+def html_report(a):
+    """Standalone analysis page. Same visual language as the live board."""
+    t_rows, detail = [], []
+    for t in a["teams"]:
+        c = GRADE_COLOR.get(t["grade"], "#8b949e")
+        t_rows.append(
+            '<tr class="trow" data-r="%d"><td class="rk">%d</td>'
+            '<td class="nm">%s</td><td><span class="gr" style="background:%s22;color:%s;'
+            'border-color:%s55">%s</span></td><td>$%d</td>'
+            '<td class="%s">%+.1f</td><td class="%s big">%+.1f</td><td>%.0f</td>'
+            '<td class="mut">%s</td></tr>' % (
+                t["roster_id"], t["rank"], t["owner"], c, c, c, t["grade"], t["spent"],
+                "pl" if t["surplus_mkt"] > 0 else "mn", t["surplus_mkt"],
+                "pl" if t["surplus_room"] > 0 else "mn", t["surplus_room"],
+                t["starter_pts"],
+                "  ".join("%s $%d" % (k, v) for k, v in t["spend"].items() if v)))
+        pr = "".join(
+            '<tr><td>%s</td><td class="nm">%s</td><td><span class="pos %s">%s</span></td>'
+            '<td>$%d</td><td class="mut">$%.1f</td><td class="mut">$%.1f</td>'
+            '<td class="%s">%+.1f</td><td class="mut">%.0f</td></tr>' % (
+                "&#9733;" if x["starter"] else "", x["name"], x["pos"], x["pos"],
+                x["paid"], x["model"], x["room"],
+                "pl" if x["edge_room"] > 0 else "mn", x["edge_room"], x["proj"])
+            for x in t["picks"])
+        detail.append(
+            '<div class="detail" id="d%d"><div class="dh">%s &mdash; $%d spent, '
+            '$%.1f of room value, %+.1f surplus, %.0f starting pts</div>'
+            '<table class="pt"><thead><tr><th></th><th>Player</th><th>Pos</th>'
+            '<th>Paid</th><th>Market</th><th>Room</th><th>vs Room</th><th>Proj</th>'
+            '</tr></thead><tbody>%s</tbody></table>'
+            '<div class="mut" style="margin-top:8px">&#9733; starts in the optimal '
+            'lineup &middot; best buy %s (%+.0f) &middot; worst buy %s (%+.0f)</div></div>'
+            % (t["roster_id"], t["owner"], t["spent"], t["room_value"],
+               t["surplus_room"], t["starter_pts"], pr,
+               t["best"]["name"], t["best"]["edge_room"],
+               t["worst"]["name"], t["worst"]["edge_room"]))
+
+    own = {t["roster_id"]: t["owner"] for t in a["teams"]}
+
+    def plist(rows, cls):
+        return "".join(
+            '<div class="row"><span><span class="pos %s">%s</span> %s '
+            '<span class="mut">%s</span></span><span>$%d <span class="mut">vs $%.0f</span> '
+            '<b class="%s">%+.0f</b></span></div>' % (
+                x["pos"], x["pos"], x["name"], own.get(x["roster_id"], ""),
+                x["paid"], x["room"], cls, x["edge_room"])
+            for x in rows)
+
+    barg = plist(sorted(a["picks"], key=lambda x: -x["edge_room"])[:10], "pl")
+    reach = plist(sorted(a["picks"], key=lambda x: x["edge_room"])[:10], "mn")
+    f = a["fit"]
+    return TPL.replace("__ROWS__", "".join(t_rows)).replace("__DETAIL__", "".join(detail)) \
+        .replace("__BARG__", barg).replace("__REACH__", reach) \
+        .replace("__NAME__", a["name"]) \
+        .replace("__SUB__", "%d picks &middot; $%d of $%d spent &middot; room price = "
+                            "%.3f &times; model %+.2f (fit r=%.3f)"
+                 % (a["totals"]["picks"], a["totals"]["spent"], a["totals"]["pool"],
+                    f["slope"], f["intercept"], f["r"]))
+
+
+TPL = r"""<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Draft Analysis</title><style>
+*{box-sizing:border-box}
+body{margin:0;background:#0d1117;color:#e6edf3;font:14px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-variant-numeric:tabular-nums}
+.hd{padding:18px 20px;background:#161b22;border-bottom:1px solid #30363d}
+.hd h1{margin:0;font-size:21px}.hd .mut{margin-top:4px;font-size:13px}
+.wrap{display:flex;gap:16px;padding:16px 20px;align-items:flex-start;flex-wrap:wrap}
+.main{flex:1 1 640px;min-width:340px}.rail{flex:0 1 340px;display:flex;flex-direction:column;gap:12px}
+.panel{background:#161b22;border:1px solid #30363d;border-radius:9px;padding:12px 14px}
+.panel h3{margin:0 0 10px;font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:#8b949e}
+table{width:100%;border-collapse:collapse}
+th{text-align:right;font-size:10px;text-transform:uppercase;color:#8b949e;padding:7px 8px;border-bottom:1px solid #30363d;white-space:nowrap}
+th:nth-child(-n+3),td:nth-child(-n+3){text-align:left}
+td{padding:8px;text-align:right;border-bottom:1px solid #21262d;white-space:nowrap}
+.trow{cursor:pointer}.trow:hover td{background:#1c2128}
+.rk{color:#8b949e;width:28px}.nm{font-weight:600;color:#fff}
+.gr{display:inline-block;min-width:30px;text-align:center;padding:2px 7px;border-radius:5px;font-weight:700;font-size:12px;border:1px solid}
+.big{font-size:16px;font-weight:700}
+.pl{color:#3fb950}.mn{color:#f85149}.mut{color:#8b949e}
+.detail{display:none;background:#11161d;border:1px solid #30363d;border-radius:9px;margin:0 0 12px;padding:12px 14px}
+.detail.on{display:block}
+.dh{font-weight:600;margin-bottom:9px}
+.pt th{font-size:10px}.pt td{padding:5px 8px;font-size:13px}
+.pos{font-size:10px;padding:2px 5px;border-radius:4px;font-weight:700}
+.QB{background:#3d2b56;color:#d2a8ff}.RB{background:#0f3a2e;color:#56d364}
+.WR{background:#0d3050;color:#79c0ff}.TE{background:#4a3312;color:#e3b341}
+.K{background:#30363d;color:#8b949e}.DEF{background:#30363d;color:#8b949e}
+.row{display:flex;justify-content:space-between;padding:4px 0;font-size:13px;gap:8px}
+.hint{padding:0 20px 4px;color:#8b949e;font-size:12px}
+@media(max-width:900px){.rail{flex:1 1 100%}}
+</style></head><body>
+<div class="hd"><h1>__NAME__ &mdash; draft analysis</h1><div class="mut">__SUB__</div></div>
+<div class="hint">Click any team for its full roster breakdown. <b>vs Room</b> grades against
+what this league actually paid, not the model &mdash; the model runs rich at the top of the board.</div>
+<div class="wrap">
+ <div class="main">
+  <div class="panel" style="padding:0;margin-bottom:12px"><table>
+   <thead><tr><th>#</th><th>Team</th><th>Grade</th><th>Spent</th><th>vs Mkt</th><th>vs Room</th><th>Start pts</th><th>Spend by pos</th></tr></thead>
+   <tbody>__ROWS__</tbody></table></div>
+  __DETAIL__
+ </div>
+ <div class="rail">
+  <div class="panel"><h3>Biggest bargains</h3>__BARG__</div>
+  <div class="panel"><h3>Biggest reaches</h3>__REACH__</div>
+ </div>
+</div>
+<script>
+document.querySelectorAll('.trow').forEach(function(r){
+  r.onclick=function(){
+    var d=document.getElementById('d'+r.dataset.r), was=d.classList.contains('on');
+    document.querySelectorAll('.detail').forEach(function(x){x.classList.remove('on')});
+    if(!was){d.classList.add('on'); d.scrollIntoView({behavior:'smooth',block:'nearest'})}
+  };
+});
+</script></body></html>"""
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--draft", required=True)
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--team", default="")
     args = ap.parse_args()
     a = analyze(args.draft)
+    if args.team:
+        print(team_detail(a, args.team)); raise SystemExit
     if args.json:
         a2 = {k: v for k, v in a.items() if k != "picks"}
         for t in a2["teams"]:

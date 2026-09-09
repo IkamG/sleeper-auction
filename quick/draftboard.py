@@ -614,8 +614,11 @@ class H(BaseHTTPRequestHandler):
                 a = analyze.analyze(did, ensure_pool())
                 if path == "/api/analysis":
                     return self._send(200, json.dumps(a, default=str))
-                return self._send(200, analyze.report(a),
-                                  "text/plain; charset=utf-8")
+                if q.get("text"):
+                    return self._send(200, analyze.report(a),
+                                      "text/plain; charset=utf-8")
+                return self._send(200, analyze.html_report(a),
+                                  "text/html; charset=utf-8")
             if path == "/api/values":
                 return self._send(200, json.dumps({"players": ensure_pool()[:400]}))
             return self._send(404, json.dumps({"error": "not found"}))
