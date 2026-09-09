@@ -46,12 +46,23 @@ them (cbs, yahoo, fantasypros) opportunistically.
 
 ## Python
 
-The app runs on the macOS system Python 3.9 with **zero dependencies** — that is
-deliberate and still true. Nothing below is required to use it.
+The app is stdlib-only and still runs on Apple's system Python 3.9 with **zero
+dependencies** — that fallback is deliberate and intact. Nothing below is
+required to use it.
 
-Homebrew Python 3.14 is now installed and on PATH (`eval "$(brew shellenv)"` was
-added to `~/.zshrc`; a backup of the original is at `~/.zshrc.bak.*`), plus a
-`.venv` with the current `anthropic` SDK for the sit/start analyzer's AI layer.
+Default interpreter is now **pyenv 3.14.7** (`pyenv global 3.14.7`), with
+Homebrew 3.14.7 behind it and Apple's 3.9.6 last. `~/.zshrc` wires Homebrew,
+pyenv and nvm, in that order; backups at `~/.zshrc.bak.*`.
+
+`.venv` is built on the pyenv Python and carries the `anthropic` SDK for the
+sit/start AI layer. `run.sh` picks `.venv` -> `python3` on PATH ->
+`/usr/bin/python3`, so a fresh clone with no setup still works.
+
+macOS 26.6 fixed the underlying system `libexpat`, verified by testing the
+module against `/usr/lib` directly. The patch below is now redundant but is
+left in place, since it points at Homebrew's own expat and is insulated from
+future system changes. The pyenv build compiles its own `pyexpat` and was never
+affected.
 
 ### One local fix worth remembering
 
