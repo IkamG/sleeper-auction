@@ -471,7 +471,37 @@ def report(b, ai=None):
     return "\n".join(o)
 
 
-def html_report(b, ai=None):
+def ai_cards(ai):
+    """Render the AI pickups. Shared by the initial page and the poll endpoint."""
+    if not ai:
+        return ""
+    if ai.get("error"):
+        return ('<div class="panel"><h3>AI analysis</h3><div class="mut">'
+                'Unavailable (%s). %s</div></div>'
+                % (ai["error"], str(ai.get("detail", ""))[:300]))
+    cards = ""
+    for p in ai.get("pickups", []):
+        cls = {"PRIORITY": "v-must", "TARGET": "v-start",
+               "SPECULATIVE": "v-flex", "PASS": "v-sit"}.get(p["verdict"], "v-flex")
+        cards += ('<div class="card"><div class="ch"><span class="nm">%s</span>'
+                  '<span class="verdict %s">%s</span>'
+                  '<span class="faab">bid %.0f%%</span></div>'
+                  '<div class="dec">%s</div>'
+                  '<div class="mut">drop: %s%s</div></div>'
+                  % (p["name"], cls, p["verdict"], p.get("faab_pct", 0),
+                     p["reason"], p.get("drop"),
+                     (" &middot; risk: " + p["risk"]) if p.get("risk") else ""))
+    out = ('<div class="panel"><h3>AI analysis</h3><div class="read">%s</div>'
+           '</div>%s' % (ai.get("roster_read", ""), cards))
+    if ai.get("biggest_weakness") or ai.get("budget_advice"):
+        out += ('<div class="panel"><h3>Summary</h3><div>%s</div>'
+                '<div class="mut" style="margin-top:6px">%s</div></div>'
+                % (ai.get("biggest_weakness", ""), ai.get("budget_advice", "")))
+    return out
+
+
+def html_report(b, ai=None, job_id=None):
+
     rows = "".join(
         '<tr><td class="nm">%s</td><td><span class="pos %s">%s</span></td>'
         '<td class="big">%s</td><td class="%s">%+.1f</td><td class="mut">%s</td>'
@@ -496,28 +526,10 @@ def html_report(b, ai=None):
         for n in b["needs"])
     news = "".join('<div class="row"><a href="%s" target="_blank">%s</a></div>'
                    % (n["url"], n["title"][:110]) for n in b["news"][:12])
-    cards = ""
-    if ai and not ai.get("error"):
-        for p in ai.get("pickups", []):
-            cls = {"PRIORITY": "v-must", "TARGET": "v-start",
-                   "SPECULATIVE": "v-flex", "PASS": "v-sit"}.get(p["verdict"], "v-flex")
-            cards += ('<div class="card"><div class="ch"><span class="nm">%s</span>'
-                      '<span class="verdict %s">%s</span>'
-                      '<span class="faab">bid %.0f%%</span></div>'
-                      '<div class="dec">%s</div>'
-                      '<div class="mut">drop: %s%s</div></div>'
-                      % (p["name"], cls, p["verdict"], p.get("faab_pct", 0),
-                         p["reason"], p.get("drop"),
-                         (" &middot; risk: " + p["risk"]) if p.get("risk") else ""))
-        cards = ('<div class="panel"><h3>AI analysis</h3><div class="read">%s</div>'
-                 '</div>%s' % (ai.get("roster_read", ""), cards))
-        if ai.get("biggest_weakness") or ai.get("budget_advice"):
-            cards += ('<div class="panel"><h3>Summary</h3><div>%s</div>'
-                      '<div class="mut" style="margin-top:6px">%s</div></div>'
-                      % (ai.get("biggest_weakness", ""), ai.get("budget_advice", "")))
-    elif ai:
-        cards = ('<div class="panel"><h3>AI analysis</h3><div class="mut">'
-                 'Unavailable (%s). %s</div></div>' % (ai["error"], ai["detail"][:300]))
+    cards = ai_cards(ai)
+
+    if job_id and not cards:
+        cards = sitstart.PENDING_PANEL + (sitstart.POLL_JS % json.dumps(job_id))
     return WV_TPL.replace("__ROWS__", rows).replace("__NEEDS__", needs) \
         .replace("__NEWS__", news).replace("__AI__", cards) \
         .replace("__TEAM__", str(b["team_name"])).replace("__WK__", str(b["week"])) \
@@ -537,10 +549,10 @@ body{margin:0;background:#0d1117;color:#e6edf3;font:14px/1.5 -apple-system,Blink
 .hd{padding:16px 20px;background:#161b22;border-bottom:1px solid #30363d}
 .hd h1{margin:0;font-size:20px}
 .wrap{padding:16px 20px;display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}
-.main{flex:1 1 640px;min-width:340px}.rail{flex:1 1 340px}
-.panel{background:#161b22;border:1px solid #30363d;border-radius:9px;padding:12px 14px;margin-bottom:12px}
+.main{flex:1 1 640px;min-width:0;max-width:100%}.rail{flex:1 1 340px}
+.panel{overflow-x:auto;background:#161b22;border:1px solid #30363d;border-radius:9px;padding:12px 14px;margin-bottom:12px}
 .panel h3{margin:0 0 9px;font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:#8b949e}
-table{width:100%}table{border-collapse:collapse}
+table{width:100%;border-collapse:collapse}
 th{text-align:right;font-size:10px;text-transform:uppercase;color:#8b949e;padding:7px;border-bottom:1px solid #30363d;white-space:nowrap}
 th:nth-child(-n+2),td:nth-child(-n+2){text-align:left}
 td{padding:7px;text-align:right;border-bottom:1px solid #21262d;white-space:nowrap}
@@ -562,6 +574,8 @@ tr:hover td{background:#1c2128}
 .v-flex{background:#4a3312;color:#e3b341;border-color:#9e6a03}
 .v-sit{background:#3a1518;color:#f85149;border-color:#7d2427}
 .dec{font-size:13px;color:#c9d1d9;margin-bottom:6px}.read{font-size:13px;color:#c9d1d9}
+.spin{display:inline-block;width:11px;height:11px;border:2px solid #30363d;border-top-color:#58a6ff;border-radius:50%;animation:sp .8s linear infinite;vertical-align:-1px;margin-right:5px}
+@keyframes sp{to{transform:rotate(360deg)}}
 @media(max-width:900px){.rail{flex:1 1 100%}}
 </style></head><body>
 <div class="nav"><a href="#" data-p="/">Draft board</a><a href="#" data-p="/analysis">Analysis</a>
@@ -579,7 +593,7 @@ document.querySelectorAll('.nav a').forEach(function(a){a.href=a.dataset.p+qs;
   actually replace in your lineup &middot; <b>Adds/24h</b> is how many Sleeper leagues added him,
   which sets his price, not his value to you &middot; <b>FAAB</b> is a suggested opening bid</div>
  </div>
- <div class="rail">__AI__
+ <div class="rail" id="ai-slot">__AI__
   <div class="panel"><h3>Roster needs</h3>__NEEDS__</div>
   <div class="panel"><h3>r/fantasyfootball</h3>__NEWS__</div>
  </div>

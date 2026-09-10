@@ -885,7 +885,59 @@ def report(slate, pos, ai=None):
     return "\n".join(o)
 
 
-def html_report(slate, pos, ai=None):
+def ai_cards(ai):
+    """Render the AI verdicts. Shared by the initial page and the poll endpoint,
+    so a streamed-in analysis looks identical to one that was ready up front."""
+    if not ai:
+        return ""
+    if ai.get("error"):
+        return ('<div class="panel"><h3>AI analysis</h3><div class="mut">'
+                'Unavailable (%s). %s</div></div>'
+                % (ai["error"], str(ai.get("detail", ""))[:300]))
+    cards = ""
+    for p in ai.get("players", []):
+        cls = {"MUST START": "v-must", "START": "v-start",
+               "FLEX": "v-flex", "SIT": "v-sit"}.get(p["verdict"], "v-flex")
+        cards += (
+            '<div class="card"><div class="ch"><span class="nm">%s</span>'
+            '<span class="verdict %s">%s</span><span class="mut">%s confidence'
+            '</span></div><div class="dec">%s</div><div class="pc">'
+            '<div><h4 class="pl">Start because</h4>%s</div>'
+            '<div><h4 class="mn">Sit because</h4>%s</div></div></div>' % (
+                p["name"], cls, p["verdict"], p["confidence"],
+                p["deciding_factor"],
+                "".join("<div>+ %s</div>" % x for x in p.get("pros", [])),
+                "".join("<div>&minus; %s</div>" % x for x in p.get("cons", []))))
+    return ('<div class="panel"><h3>AI analysis</h3><div class="read">%s</div>'
+            '</div>%s<div class="panel"><h3>Lineup call</h3><div>%s</div>%s</div>'
+            % (ai.get("posture_read", ""), cards, ai.get("lineup_call", ""),
+               '<div class="mut" style="margin-top:8px">Biggest risk: %s</div>'
+               % ai["biggest_risk"] if ai.get("biggest_risk") else ""))
+
+
+PENDING_PANEL = """<div class="panel" id="ai-pending"><h3>AI analysis</h3>
+<div class="mut"><span class="spin"></span> Analysing the slate&hellip;
+<span id="ai-elapsed">0s</span><br><span style="font-size:12px">The numbers above
+are final. This usually takes one to three minutes.</span></div></div>"""
+
+POLL_JS = """<script>(function(){
+var id=%s; if(!id) return;
+var box=document.getElementById('ai-slot'), t0=Date.now(), tries=0;
+var el=document.getElementById('ai-elapsed');
+var tick=setInterval(function(){if(el)el.textContent=Math.round((Date.now()-t0)/1000)+'s';},1000);
+function poll(){
+  fetch('/api/ai/'+id).then(function(r){return r.json()}).then(function(j){
+    if(j.status==='pending'){ tries++; setTimeout(poll, tries>40?10000:3000); return; }
+    clearInterval(tick);
+    box.innerHTML = j.html || '<div class="panel"><h3>AI analysis</h3><div class="mut">No result.</div></div>';
+  }).catch(function(){ tries++; if(tries<60) setTimeout(poll,5000); else clearInterval(tick); });
+}
+setTimeout(poll,2000);
+})();</script>"""
+
+
+def html_report(slate, pos, ai=None, job_id=None):
+
     rows = []
     for p in slate["players"]:
         v = p["volatility"] or {}
@@ -928,32 +980,10 @@ def html_report(slate, pos, ai=None):
                 ("%s%%" % sn["recent_pct"] if sn.get("recent_pct") else "&mdash;"),
                 " &middot; ".join(notes)))
 
-    cards = ""
-    if ai and not ai.get("error"):
-        for p in ai.get("players", []):
-            cls = {"MUST START": "v-must", "START": "v-start",
-                   "FLEX": "v-flex", "SIT": "v-sit"}.get(p["verdict"], "v-flex")
-            cards += (
-                '<div class="card"><div class="ch"><span class="nm">%s</span>'
-                '<span class="verdict %s">%s</span><span class="mut">%s confidence'
-                '</span></div><div class="dec">%s</div><div class="pc">'
-                '<div><h4 class="pl">Start because</h4>%s</div>'
-                '<div><h4 class="mn">Sit because</h4>%s</div></div></div>' % (
-                    p["name"], cls, p["verdict"], p["confidence"],
-                    p["deciding_factor"],
-                    "".join("<div>+ %s</div>" % x for x in p.get("pros", [])),
-                    "".join("<div>&minus; %s</div>" % x for x in p.get("cons", []))))
-        cards = ('<div class="panel"><h3>AI analysis</h3><div class="read">%s</div>'
-                 '</div>%s<div class="panel"><h3>Lineup call</h3><div>%s</div>'
-                 '%s</div>' % (
-                     ai.get("posture_read", ""), cards, ai.get("lineup_call", ""),
-                     '<div class="mut" style="margin-top:8px">Biggest risk: %s</div>'
-                     % ai["biggest_risk"] if ai.get("biggest_risk") else ""))
-    elif ai:
-        cards = ('<div class="panel"><h3>AI analysis</h3><div class="mut">'
-                 'Unavailable (%s). %s</div></div>'
-                 % (ai["error"], ai["detail"][:300]))
+    cards = ai_cards(ai)
 
+    if job_id and not cards:
+        cards = PENDING_PANEL + (POLL_JS % json.dumps(job_id))
     return SS_TPL.replace("__ROWS__", "".join(rows)).replace("__AI__", cards) \
         .replace("__TEAM__", str(slate["team_name"])).replace("__WK__", str(slate["week"])) \
         .replace("__MODE__", pos["mode"].upper()).replace("__GUIDE__", pos["guidance"]) \
@@ -975,8 +1005,8 @@ body{margin:0;background:#0d1117;color:#e6edf3;font:14px/1.5 -apple-system,Blink
 .post{margin-top:9px;padding:10px 13px;border-radius:8px;background:#11161d;border:1px solid #30363d}
 .post b{font-size:15px}
 .wrap{padding:16px 20px;display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}
-.main{flex:1 1 620px;min-width:340px}.rail{flex:1 1 380px}
-.panel{background:#161b22;border:1px solid #30363d;border-radius:9px;padding:12px 14px;margin-bottom:12px}
+.main{flex:1 1 620px;min-width:0;max-width:100%}.rail{flex:1 1 380px}
+.panel{overflow-x:auto;background:#161b22;border:1px solid #30363d;border-radius:9px;padding:12px 14px;margin-bottom:12px}
 .panel h3{margin:0 0 9px;font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:#8b949e}
 table{width:100%;border-collapse:collapse}
 th{text-align:right;font-size:10px;text-transform:uppercase;color:#8b949e;padding:7px;border-bottom:1px solid #30363d;white-space:nowrap}
@@ -1002,10 +1032,12 @@ tr.st td{background:#111b26}
 .pc>div{flex:1 1 240px}.pc h4{margin:0 0 4px;font-size:11px;text-transform:uppercase}
 .pc div div{padding:2px 0;color:#c9d1d9}
 .read{font-size:13px;color:#c9d1d9}
+.spin{display:inline-block;width:11px;height:11px;border:2px solid #30363d;border-top-color:#58a6ff;border-radius:50%;animation:sp .8s linear infinite;vertical-align:-1px;margin-right:5px}
+@keyframes sp{to{transform:rotate(360deg)}}
 @media(max-width:900px){.rail{flex:1 1 100%}}
 </style></head><body>
 <div class="nav"><a href="#" data-p="/">Draft board</a><a href="#" data-p="/analysis">Analysis</a>
-<a href="#" data-p="/sitstart">Sit / Start</a>\n<a href="#" data-p="/waivers">Waivers</a><span class="navsp"></span>
+<a href="#" data-p="/sitstart">Sit / Start</a><a href="#" data-p="/waivers">Waivers</a><span class="navsp"></span>
 <span class="navmut">week __WK__</span></div>
 <script>(function(){var qs=location.search||'';
 document.querySelectorAll('.nav a').forEach(function(a){a.href=a.dataset.p+qs;
@@ -1026,7 +1058,7 @@ posture <b>__MODE__</b><div class="mut" style="margin-top:4px">__GUIDE__</div></
   allowed to this position, computed from completed games &middot;
   <b>Snap%</b> is last-3-game snap share; green/red flags a shift of 8+ points</div>
  </div>
- <div class="rail">__AI__</div>
+ <div class="rail" id="ai-slot">__AI__</div>
 </div></body></html>"""
 
 

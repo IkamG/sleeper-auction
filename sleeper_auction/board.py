@@ -684,6 +684,51 @@ def live_board(players, state, my_rid=None):
 
 POOL = {"players": None, "lock": threading.Lock(), "meta": {}}
 
+# Long AI calls run here instead of blocking the page. The page ships with the
+# computed numbers immediately -- which is the part you need during a live
+# week -- and the narrative arrives when it is ready.
+JOBS = {"lock": threading.Lock(), "items": {}}
+JOB_TTL = 1800
+
+
+def start_job(job_id, work, render):
+    """Run `work` off-thread. Returns immediately.
+
+    Re-requesting a job that is already running or finished returns the
+    existing one rather than paying for the same analysis twice -- a page
+    reload while it is thinking must not start a second call.
+    """
+    with JOBS["lock"]:
+        now = time.time()
+        for k, v in list(JOBS["items"].items()):
+            if now - v.get("started", now) > JOB_TTL:
+                del JOBS["items"][k]
+        cur = JOBS["items"].get(job_id)
+        if cur:
+            return cur
+        JOBS["items"][job_id] = {"status": "pending", "result": None,
+                                 "html": None, "started": now}
+
+    def run():
+        try:
+            res = work()
+            status = "error" if isinstance(res, dict) and res.get("error") else "done"
+        except Exception as e:
+            res, status = {"error": "job_failed", "detail": str(e)}, "error"
+        html = ""
+        try:
+            html = render(res)
+        except Exception as e:
+            html = "<div class='panel'><h3>AI analysis</h3><div class='mut'>" \
+                   "render failed: %s</div></div>" % e
+        with JOBS["lock"]:
+            JOBS["items"][job_id] = {"status": status, "result": res, "html": html,
+                                     "started": time.time()}
+
+    threading.Thread(target=run, daemon=True).start()
+    with JOBS["lock"]:
+        return JOBS["items"][job_id]
+
 
 def ensure_pool():
     with POOL["lock"]:
@@ -775,6 +820,17 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps(
                     {"user": u, "drafts": sd.user_drafts(u["user_id"], season)},
                     default=str))
+            if path.startswith("/api/ai/"):
+                jid = path[len("/api/ai/"):]
+                with JOBS["lock"]:
+                    j = JOBS["items"].get(jid)
+                if not j:
+                    return self._send(404, json.dumps(
+                        {"status": "unknown",
+                         "detail": "no such job (it may have expired)"}))
+                return self._send(200, json.dumps(
+                    {"status": j["status"], "html": j.get("html"),
+                     "result": j.get("result")}, default=str))
             if path in ("/waivers", "/api/waivers"):
                 did = q.get("draft") or ARGS.draft
                 rid = q.get("me") or ARGS.me
@@ -784,15 +840,29 @@ class H(BaseHTTPRequestHandler):
                 from sleeper_auction import waivers
                 wb = waivers.build_board(did, int(rid), int(q.get("week") or 1),
                                          int(q.get("limit") or 25))
-                ai = None if q.get("noai") else waivers.ai_analyze(wb)
+                job = None
+                ai = None
+                if not q.get("noai"):
+                    jid = "wv-%s-%s-%s" % (did, rid, q.get("week") or 1)
+                    if path == "/api/waivers":
+                        ai = waivers.ai_analyze(wb)                 # API stays sync
+                    else:
+                        job = start_job(jid, lambda: waivers.ai_analyze(wb),
+                                        waivers.ai_cards)
+                        if job["status"] != "pending":
+                            ai = job.get("result")
                 if path == "/api/waivers":
                     return self._send(200, json.dumps({"board": wb, "ai": ai},
                                                       default=str))
                 if q.get("text"):
                     return self._send(200, waivers.report(wb, ai),
                                       "text/plain; charset=utf-8")
-                return self._send(200, waivers.html_report(wb, ai),
-                                  "text/html; charset=utf-8")
+                return self._send(
+                    200, waivers.html_report(
+                        wb, ai,
+                        job_id=("wv-%s-%s-%s" % (did, rid, q.get("week") or 1))
+                        if job and job["status"] == "pending" else None),
+                    "text/html; charset=utf-8")
             if path in ("/sitstart", "/api/sitstart"):
                 did = q.get("draft") or ARGS.draft
                 rid = q.get("me") or ARGS.me
@@ -807,15 +877,31 @@ class H(BaseHTTPRequestHandler):
                 wr = [_up.unquote(x) for x in (q.get("wrcb") or "").split(",") if x]
                 if not wr and ARGS.wrcb:
                     wr = list(ARGS.wrcb)
-                ai = None if q.get("noai") else sitstart.ai_analyze(sl, ps, wrcb=wr)
+                job = None
+                ai = None
+                if not q.get("noai"):
+                    jid = "ss-%s-%s-%s" % (did, rid, wk)
+                    if path == "/api/sitstart":
+                        ai = sitstart.ai_analyze(sl, ps, wrcb=wr)   # API stays sync
+                    else:
+                        job = start_job(
+                            jid,
+                            lambda: sitstart.ai_analyze(sl, ps, wrcb=wr),
+                            sitstart.ai_cards)
+                        if job["status"] != "pending":
+                            ai = job.get("result")
                 if path == "/api/sitstart":
                     return self._send(200, json.dumps(
                         {"slate": sl, "posture": ps, "ai": ai}, default=str))
                 if q.get("text"):
                     return self._send(200, sitstart.report(sl, ps, ai),
                                       "text/plain; charset=utf-8")
-                return self._send(200, sitstart.html_report(sl, ps, ai),
-                                  "text/html; charset=utf-8")
+                return self._send(
+                    200, sitstart.html_report(
+                        sl, ps, ai,
+                        job_id=("ss-%s-%s-%s" % (did, rid, wk)) if job and
+                        job["status"] == "pending" else None),
+                    "text/html; charset=utf-8")
             if path in ("/analysis", "/api/analysis"):
                 did = q.get("draft") or ARGS.draft
                 if not did:
@@ -866,9 +952,9 @@ body{margin:0;background:#0d1117;color:#e6edf3;font:14px/1.45 -apple-system,Blin
 .ok{background:#12331d;color:#3fb950;border:1px solid #238636}
 .no{background:#3a1518;color:#f85149;border:1px solid #7d2427}
 .wrap{display:flex;gap:14px;padding:14px 16px;align-items:flex-start;flex-wrap:wrap}
-.main{flex:1 1 620px;min-width:340px}
+.main{flex:1 1 620px;min-width:0;max-width:100%}
 .rail{flex:0 1 330px;display:flex;flex-direction:column;gap:12px}
-.panel{background:#161b22;border:1px solid #30363d;border-radius:9px;padding:11px 13px}
+.panel{overflow-x:auto;background:#161b22;border:1px solid #30363d;border-radius:9px;padding:11px 13px}
 .panel h3{margin:0 0 9px;font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:#8b949e;font-weight:600}
 table{width:100%;border-collapse:collapse}
 th{text-align:right;font-size:10px;text-transform:uppercase;color:#8b949e;padding:6px 7px;border-bottom:1px solid #30363d;
@@ -894,7 +980,7 @@ tr.poor{opacity:.34}
 </style></head><body>
 <div class="nav"><a href="#" data-p="/" id="nav-board">Draft board</a>
 <a href="#" data-p="/analysis" id="nav-analysis">Analysis</a>
-<a href="#" data-p="/sitstart">Sit / Start</a>\n<a href="#" data-p="/waivers">Waivers</a>
+<a href="#" data-p="/sitstart">Sit / Start</a><a href="#" data-p="/waivers">Waivers</a>
 <span class="navsp"></span><span class="navmut" id="nav-league"></span></div>
 <script>(function(){var qs=location.search||'';
 document.querySelectorAll('.nav a').forEach(function(a){a.href=a.dataset.p+qs;

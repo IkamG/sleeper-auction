@@ -169,6 +169,17 @@ priority order:
 
 Option 2 is the default path for most users and costs nothing extra.
 
+**Pages never block on it.** `/sitstart` and `/waivers` render every computed
+number immediately — typically in about a second — and the analysis is
+generated on a background thread, polled by the page, and dropped in when
+ready. A reload while it is thinking reuses the running job rather than paying
+for the same analysis twice, and a finished one is served straight from cache.
+
+    GET /api/ai/<job_id>    -> {status: pending|done|error, html, result}
+
+The JSON endpoints (`/api/sitstart`, `/api/waivers`) stay synchronous, since a
+scripted caller wants the whole answer in one response.
+
 ---
 
 ## Layout

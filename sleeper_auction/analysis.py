@@ -307,8 +307,8 @@ body{margin:0;background:#0d1117;color:#e6edf3;font:14px/1.5 -apple-system,Blink
 .hd{padding:18px 20px;background:#161b22;border-bottom:1px solid #30363d}
 .hd h1{margin:0;font-size:21px}.hd .mut{margin-top:4px;font-size:13px}
 .wrap{display:flex;gap:16px;padding:16px 20px;align-items:flex-start;flex-wrap:wrap}
-.main{flex:1 1 640px;min-width:340px}.rail{flex:0 1 340px;display:flex;flex-direction:column;gap:12px}
-.panel{background:#161b22;border:1px solid #30363d;border-radius:9px;padding:12px 14px}
+.main{flex:1 1 640px;min-width:0;max-width:100%}.rail{flex:0 1 340px;display:flex;flex-direction:column;gap:12px}
+.panel{overflow-x:auto;background:#161b22;border:1px solid #30363d;border-radius:9px;padding:12px 14px}
 .panel h3{margin:0 0 10px;font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:#8b949e}
 table{width:100%;border-collapse:collapse}
 th{text-align:right;font-size:10px;text-transform:uppercase;color:#8b949e;padding:7px 8px;border-bottom:1px solid #30363d;white-space:nowrap}
