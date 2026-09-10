@@ -578,11 +578,11 @@ tr:hover td{background:#1c2128}
 @keyframes sp{to{transform:rotate(360deg)}}
 @media(max-width:900px){.rail{flex:1 1 100%}}
 </style></head><body>
-<div class="nav"><a href="#" data-p="/">Draft board</a><a href="#" data-p="/analysis">Analysis</a>
-<a href="#" data-p="/sitstart">Sit / Start</a><a href="#" data-p="/waivers">Waivers</a></div>
+<div class="nav"><a href="#" data-p="/sitstart">Sit / Start</a><a href="#" data-p="/waivers">Waivers</a><a href="#" data-p="/board">Draft board</a><a href="#" data-p="/analysis">Analysis</a></div>
 <script>(function(){var qs=location.search||'';
+var here=location.pathname==='/'?'/sitstart':location.pathname;
 document.querySelectorAll('.nav a').forEach(function(a){a.href=a.dataset.p+qs;
- if(location.pathname===a.dataset.p)a.className='on';});})();</script>
+ if(here===a.dataset.p)a.className='on';});})();</script>
 <div class="hd"><h1>__TEAM__ &mdash; week __WK__ waivers</h1>
 <div class="mut">__N__ free agents &middot; flex bar __BAR__ pts &middot; FAAB budget __BUD__</div></div>
 <div class="wrap">

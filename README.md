@@ -36,7 +36,7 @@ yourself up by Sleeper username:
 
 All four are served by the same process and share a tab bar.
 
-### Draft board — `/`
+### Draft board — `/board`
 
 Polls Sleeper every 5 seconds, drops drafted players, and re-prices everyone
 left.
@@ -79,37 +79,7 @@ Final score weights value captured (45%) and best-lineup projected points
 Click any team for a full roster breakdown. Also available as
 `/analysis?text=1` and `/api/analysis`.
 
-### Waivers — `/waivers?week=N`
-
-Ranks every unrostered player on two forces that pull against each other:
-
-- **Need** — weekly points above the player he would actually replace *in your
-  lineup*. A fact about your roster, not about him.
-- **Quality** — his season-long auction value in the abstract. A genuinely
-  valuable player is worth rostering even without a need.
-
-A pure-need model misses league-winners at positions you happen to be set at; a
-pure-quality model tells a team with two elite QBs to bid on a third. Each
-position carries a **hurdle** — the weekly edge required before an upgrade is
-worth a roster spot. It is high at single-slot positions (QB, TE, K, DEF)
-because the backup never plays, and low at RB/WR where a spare slots into the
-flex. A player below his hurdle is still shown, but discounted and capped at
-token FAAB.
-
-**FAAB pricing is anchored on measured demand.** Sleeper publishes how many
-leagues added each player in the last 24 hours, across millions of leagues —
-crowd-sourced waiver demand measured rather than opined. High demand on a
-player who does not help your roster is a reason to let him go, not to chase
-him: demand sets his *price*, not his value to you.
-
-The league's FAAB budget is read from Sleeper, so bids come back in real
-dollars as well as percentages.
-
-Recent r/fantasyfootball posts are pulled from the Atom feed for injury and
-role leads. They are passed to the model as explicitly unverified chatter —
-useful for a lead, never asserted as fact.
-
-### Sit / start — `/sitstart?week=N`
+### Sit / start — `/` or `/sitstart?week=N`
 
 A deterministic layer computes every number; Claude then argues both sides of
 each call. **Claude is never asked to estimate a number it could be handed** —
@@ -152,6 +122,36 @@ images:
 The model reads the table directly, so there is no parser to maintain. It is
 told the charts are partial and to report an unlisted receiver as unknown
 rather than guessing.
+
+### Waivers — `/waivers?week=N`
+
+Ranks every unrostered player on two forces that pull against each other:
+
+- **Need** — weekly points above the player he would actually replace *in your
+  lineup*. A fact about your roster, not about him.
+- **Quality** — his season-long auction value in the abstract. A genuinely
+  valuable player is worth rostering even without a need.
+
+A pure-need model misses league-winners at positions you happen to be set at; a
+pure-quality model tells a team with two elite QBs to bid on a third. Each
+position carries a **hurdle** — the weekly edge required before an upgrade is
+worth a roster spot. It is high at single-slot positions (QB, TE, K, DEF)
+because the backup never plays, and low at RB/WR where a spare slots into the
+flex. A player below his hurdle is still shown, but discounted and capped at
+token FAAB.
+
+**FAAB pricing is anchored on measured demand.** Sleeper publishes how many
+leagues added each player in the last 24 hours, across millions of leagues —
+crowd-sourced waiver demand measured rather than opined. High demand on a
+player who does not help your roster is a reason to let him go, not to chase
+him: demand sets his *price*, not his value to you.
+
+The league's FAAB budget is read from Sleeper, so bids come back in real
+dollars as well as percentages.
+
+Recent r/fantasyfootball posts are pulled from the Atom feed for injury and
+role leads. They are passed to the model as explicitly unverified chatter —
+useful for a lead, never asserted as fact.
 
 ---
 
@@ -204,7 +204,9 @@ Every module runs standalone:
 
 ### HTTP API
 
-    GET  /                                 draft board
+    GET  /                                 sit/start (falls back to the board
+                                           when no draft is set)
+    GET  /board                            draft board
     GET  /analysis                         grades      (?text=1 for plain text)
     GET  /sitstart?week=N                  sit/start   (?text=1, ?noai=1)
     GET  /api/board?draft=&me=             live board JSON, polled every 5s

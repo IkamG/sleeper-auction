@@ -783,8 +783,16 @@ class H(BaseHTTPRequestHandler):
                     if "=" in kv:
                         k, v = kv.split("=", 1)
                         q[k] = v
-            if path == "/":
+            if path == "/board":
                 return self._send(200, HTML, "text/html; charset=utf-8")
+            if path == "/":
+                # Sit/start is the page that gets used every week; the draft
+                # board is used once a season. Fall back to the board when
+                # there is no draft to analyse, since it owns the setup card.
+                if (q.get("draft") or ARGS.draft) and (q.get("me") or ARGS.me):
+                    path = "/sitstart"
+                else:
+                    return self._send(200, HTML, "text/html; charset=utf-8")
             if path == "/api/board":
                 did = q.get("draft") or ARGS.draft
                 if not did:
@@ -978,10 +986,7 @@ tr.poor{opacity:.34}
 .cliff{color:#f85149;font-weight:600}
 #err{display:none;padding:9px 16px;background:#3a1518;color:#f85149;font-size:13px}
 </style></head><body>
-<div class="nav"><a href="#" data-p="/" id="nav-board">Draft board</a>
-<a href="#" data-p="/analysis" id="nav-analysis">Analysis</a>
-<a href="#" data-p="/sitstart">Sit / Start</a><a href="#" data-p="/waivers">Waivers</a>
-<span class="navsp"></span><span class="navmut" id="nav-league"></span></div>
+<div class="nav"><a href="#" data-p="/sitstart">Sit / Start</a><a href="#" data-p="/waivers">Waivers</a><a href="#" data-p="/board">Draft board</a><a href="#" data-p="/analysis">Analysis</a><span class="navsp"></span><span class="navmut" id="nav-league"></span></div>
 <script>(function(){var qs=location.search||'';
 document.querySelectorAll('.nav a').forEach(function(a){a.href=a.dataset.p+qs;
   if(location.pathname===a.dataset.p)a.className='on';});})();</script>

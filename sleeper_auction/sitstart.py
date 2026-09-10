@@ -1036,12 +1036,12 @@ tr.st td{background:#111b26}
 @keyframes sp{to{transform:rotate(360deg)}}
 @media(max-width:900px){.rail{flex:1 1 100%}}
 </style></head><body>
-<div class="nav"><a href="#" data-p="/">Draft board</a><a href="#" data-p="/analysis">Analysis</a>
-<a href="#" data-p="/sitstart">Sit / Start</a><a href="#" data-p="/waivers">Waivers</a><span class="navsp"></span>
+<div class="nav"><a href="#" data-p="/sitstart">Sit / Start</a><a href="#" data-p="/waivers">Waivers</a><a href="#" data-p="/board">Draft board</a><a href="#" data-p="/analysis">Analysis</a><span class="navsp"></span>
 <span class="navmut">week __WK__</span></div>
 <script>(function(){var qs=location.search||'';
+var here=location.pathname==='/'?'/sitstart':location.pathname;
 document.querySelectorAll('.nav a').forEach(function(a){a.href=a.dataset.p+qs;
- if(location.pathname===a.dataset.p)a.className='on';});})();</script>
+ if(here===a.dataset.p)a.className='on';});})();</script>
 <div class="hd"><h1>__TEAM__ &mdash; week __WK__ sit / start</h1>
 <div class="post">You <b>__MINE__</b> vs opponent <b>__OPP__</b> &nbsp;&rarr;&nbsp;
 posture <b>__MODE__</b><div class="mut" style="margin-top:4px">__GUIDE__</div></div></div>
