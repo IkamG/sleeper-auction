@@ -708,6 +708,27 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b)
 
+    def do_POST(self):
+        """Rebuild the source pool without restarting.
+
+        Useful mid-draft when a source was unreachable at startup: the board
+        keeps serving the cached pool while this rebuilds it in place.
+        """
+        if self.path.split("?")[0] != "/api/refresh":
+            return self._send(404, json.dumps({"error": "not found"}))
+        try:
+            with POOL["lock"]:
+                POOL["players"] = None
+                POOL["meta"] = {}
+            players = ensure_pool()
+            return self._send(200, json.dumps(
+                {"ok": True, "players": len(players), "season": SEASON,
+                 "sources": POOL["meta"].get("counts", {}),
+                 "errors": POOL["meta"].get("errors", {})}))
+        except Exception as e:
+            return self._send(500, json.dumps(
+                {"error": "refresh failed", "detail": str(e)}))
+
     def do_GET(self):
         try:
             path = self.path.split("?")[0]
