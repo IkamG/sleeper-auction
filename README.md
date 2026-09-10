@@ -4,10 +4,10 @@ Four tools for a Sleeper **auction** league, half-PPR by default:
 
 | | |
 |---|---|
-| **Draft board** | Live auction values during the draft, inflation-adjusted as the room spends |
-| **Analysis** | Post-draft grading of every team against market value and the room's own clearing price |
 | **Sit / start** | Weekly start-or-sit calls from Vegas lines, matchups, usage and AI reasoning |
 | **Waivers** | Who to add, what to drop, and how much FAAB to bid |
+| **Draft board** | Live auction values during the draft, inflation-adjusted as the room spends |
+| **Analysis** | Post-draft grading of every team against market value and the room's own clearing price |
 
 Python 3.9+, **standard library only**. No install step, no dependencies, no build.
 One optional extra unlocks the AI layer — see [AI analysis](#ai-analysis).
@@ -19,7 +19,8 @@ One optional extra unlocks the AI layer — see [AI analysis](#ai-analysis).
     git clone https://github.com/IkamG/sleeper-auction && cd sleeper-auction
     ./run.sh --draft <draft_id> --me <roster_id>
 
-Then open the URL it prints. `run.sh` also prints a LAN address so a phone on
+Then open the URL it prints — it lands on **sit/start**, the page you want most
+weeks. The draft board lives at `/board`. `run.sh` also prints a LAN address so a phone on
 the same wifi can load it during a draft.
 
 **Don't know your draft id?** Start the server with no arguments and look
@@ -35,49 +36,6 @@ yourself up by Sleeper username:
 ## The tools
 
 All four are served by the same process and share a tab bar.
-
-### Draft board — `/board`
-
-Polls Sleeper every 5 seconds, drops drafted players, and re-prices everyone
-left.
-
-- **Live $** — inflation-adjusted value. Inflation is the discretionary money
-  left league-wide (after reserving $1 for every open roster slot) divided by
-  the expected cost of the players still needed to fill those slots. It is
-  computed on dollars *above* the $1 minimum, which is the part most auction
-  calculators get wrong: dividing raw values systematically overprices the
-  middle of the board.
-- **Base $** — 55% VORP model on half-PPR projections, 45% real market auction
-  dollars, both rescaled onto this league's pool.
-- **Edge** — model minus market. Positive means the room may be sleeping on him.
-- **'25 paid** — what *this exact room* paid for that player last season, which
-  no public ranking source knows.
-
-Sleeper's public API exposes **completed picks only** — there is no public
-endpoint for the player currently on the block, and the live nomination flows
-over their private app websocket. The nomination lookup box covers that gap:
-type the name being auctioned and get Live $, your max bid, tier context, and a
-bid-or-pass verdict.
-
-### Analysis — `/analysis`
-
-Grades every team once the draft is done.
-
-- **vs Market** — value acquired minus price paid.
-- **vs Room** — the same, against a least-squares fit of what this league
-  actually paid onto model value. This matters because the model runs rich at
-  the top of the board, so grading purely against it hands free credit to
-  whoever bought the studs. The room line asks *did you beat these twelve
-  people*, which is the question that decides a league.
-- Grades are on the **league curve**, not an absolute scale — a 12-team auction
-  is zero-sum, and absolute grading buries half the league in Ds including
-  teams with positive surplus.
-
-Final score weights value captured (45%) and best-lineup projected points
-(55%): surplus you cannot start is worth less than surplus you can.
-
-Click any team for a full roster breakdown. Also available as
-`/analysis?text=1` and `/api/analysis`.
 
 ### Sit / start — `/` or `/sitstart?week=N`
 
@@ -152,6 +110,49 @@ dollars as well as percentages.
 Recent r/fantasyfootball posts are pulled from the Atom feed for injury and
 role leads. They are passed to the model as explicitly unverified chatter —
 useful for a lead, never asserted as fact.
+
+### Draft board — `/board`
+
+Polls Sleeper every 5 seconds, drops drafted players, and re-prices everyone
+left.
+
+- **Live $** — inflation-adjusted value. Inflation is the discretionary money
+  left league-wide (after reserving $1 for every open roster slot) divided by
+  the expected cost of the players still needed to fill those slots. It is
+  computed on dollars *above* the $1 minimum, which is the part most auction
+  calculators get wrong: dividing raw values systematically overprices the
+  middle of the board.
+- **Base $** — 55% VORP model on half-PPR projections, 45% real market auction
+  dollars, both rescaled onto this league's pool.
+- **Edge** — model minus market. Positive means the room may be sleeping on him.
+- **'25 paid** — what *this exact room* paid for that player last season, which
+  no public ranking source knows.
+
+Sleeper's public API exposes **completed picks only** — there is no public
+endpoint for the player currently on the block, and the live nomination flows
+over their private app websocket. The nomination lookup box covers that gap:
+type the name being auctioned and get Live $, your max bid, tier context, and a
+bid-or-pass verdict.
+
+### Analysis — `/analysis`
+
+Grades every team once the draft is done.
+
+- **vs Market** — value acquired minus price paid.
+- **vs Room** — the same, against a least-squares fit of what this league
+  actually paid onto model value. This matters because the model runs rich at
+  the top of the board, so grading purely against it hands free credit to
+  whoever bought the studs. The room line asks *did you beat these twelve
+  people*, which is the question that decides a league.
+- Grades are on the **league curve**, not an absolute scale — a 12-team auction
+  is zero-sum, and absolute grading buries half the league in Ds including
+  teams with positive surplus.
+
+Final score weights value captured (45%) and best-lineup projected points
+(55%): surplus you cannot start is worth less than surplus you can.
+
+Click any team for a full roster breakdown. Also available as
+`/analysis?text=1` and `/api/analysis`.
 
 ---
 
