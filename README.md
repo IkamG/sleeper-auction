@@ -1,6 +1,6 @@
 # sleeper-auction
 
-Three tools for a Sleeper **auction** league, half-PPR by default:
+Four tools for a Sleeper **auction** league, half-PPR by default:
 
 | | |
 |---|---|
@@ -32,9 +32,9 @@ yourself up by Sleeper username:
 
 ---
 
-## The three tools
+## The tools
 
-All three are served by the same process and share a tab bar.
+All four are served by the same process and share a tab bar.
 
 ### Draft board — `/`
 
@@ -157,7 +157,7 @@ rather than guessing.
 
 ## AI analysis
 
-The sit/start narrative needs a Claude backend. Three are supported, in
+The sit/start and waiver narratives need a Claude backend. Three are supported, in
 priority order:
 
 1. **`ANTHROPIC_API_KEY` set** → official `anthropic` SDK if installed, else
