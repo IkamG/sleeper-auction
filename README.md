@@ -54,6 +54,21 @@ The inline version does none of that and simply exits if the call fails.
 `ffc` stays inline: the adapter returns the same ~250 players, so there is
 nothing to gain.
 
+`valuation.py` owns the auction math when importable, with the inline version
+in `draftboard.py` as fallback. It fixes two real bugs the inline math has:
+tiers cap at `MAX_TIER_SIZE` so a flat position cannot collapse into one
+27-player tier, and its normalisation lands on exactly `teams * budget` instead
+of leaking a few dollars. It also fills players with no published projection
+from an isotonic points-vs-rank curve (318 of them, previously stranded at $1)
+and returns a 0-1 `value_conf` from source coverage and disagreement.
+
+`sleeper_draft.py` backs `GET /api/user/<username>/drafts`, so a draft can be
+found by Sleeper username instead of requiring the id up front.
+
+`value_conf` and `proj_source` flow through to both the analysis page and the
+sit/start payload, so neither the grade view nor the model treats an inferred
+projection as a published one.
+
 ## Python
 
 The app is stdlib-only and still runs on Apple's system Python 3.9 with **zero

@@ -100,7 +100,8 @@ def analyze(draft_id, players=None):
         rows.append({"name": p["name"], "pos": p["pos"], "team": p["team"],
                      "roster_id": pk["roster_id"], "paid": pk["amount"],
                      "model": p["base"], "proj": p["proj"] or 0.0,
-                     "market": p.get("market_adj"), "ly": p.get("ly"), "_p": p})
+                     "market": p.get("market_adj"), "ly": p.get("ly"),
+                     "conf": p.get("value_conf"), "tier": p.get("tier"), "_p": p})
     if not rows:
         raise SystemExit("No picks to analyze — is the draft complete?")
 
@@ -171,13 +172,14 @@ def team_detail(a, owner):
          % (t["spent"], t["n"], t["model_value"], t["room_value"]),
          "surplus %+.1f vs market, %+.1f vs room | starting lineup %.1f projected pts"
          % (t["surplus_mkt"], t["surplus_room"], t["starter_pts"]), "",
-         "%-2s %-24s %-4s %-6s %-8s %-8s %-8s %-7s" %
-         ("", "PLAYER", "POS", "PAID", "MARKET", "ROOM", "VS ROOM", "PROJ"),
-         "-" * 74]
+         "%-2s %-24s %-4s %-6s %-8s %-8s %-8s %-7s %-5s" %
+         ("", "PLAYER", "POS", "PAID", "MARKET", "ROOM", "VS ROOM", "PROJ", "CONF"),
+         "-" * 82]
     for x in t["picks"]:
-        o.append("%-2s %-24s %-4s $%-5d $%-7.1f $%-7.1f %+-8.1f %.0f" %
+        o.append("%-2s %-24s %-4s $%-5d $%-7.1f $%-7.1f %+-8.1f %-7.0f %s" %
                  ("*" if x["starter"] else " ", x["name"], x["pos"], x["paid"],
-                  x["model"], x["room"], x["edge_room"], x["proj"]))
+                  x["model"], x["room"], x["edge_room"], x["proj"],
+                  ("%.2f" % x["conf"]) if x.get("conf") is not None else "-"))
     o.append("")
     o.append("(* = starts in the optimal lineup)")
     o.append("spend by position: " + "  ".join(
@@ -249,16 +251,18 @@ def html_report(a):
         pr = "".join(
             '<tr><td>%s</td><td class="nm">%s</td><td><span class="pos %s">%s</span></td>'
             '<td>$%d</td><td class="mut">$%.1f</td><td class="mut">$%.1f</td>'
-            '<td class="%s">%+.1f</td><td class="mut">%.0f</td></tr>' % (
+            '<td class="%s">%+.1f</td><td class="mut">%.0f</td>'
+            '<td class="mut">%s</td></tr>' % (
                 "&#9733;" if x["starter"] else "", x["name"], x["pos"], x["pos"],
                 x["paid"], x["model"], x["room"],
-                "pl" if x["edge_room"] > 0 else "mn", x["edge_room"], x["proj"])
+                "pl" if x["edge_room"] > 0 else "mn", x["edge_room"], x["proj"],
+                ("%.2f" % x["conf"]) if x.get("conf") is not None else "&mdash;")
             for x in t["picks"])
         detail.append(
             '<div class="detail" id="d%d"><div class="dh">%s &mdash; $%d spent, '
             '$%.1f of room value, %+.1f surplus, %.0f starting pts</div>'
             '<table class="pt"><thead><tr><th></th><th>Player</th><th>Pos</th>'
-            '<th>Paid</th><th>Market</th><th>Room</th><th>vs Room</th><th>Proj</th>'
+            '<th>Paid</th><th>Market</th><th>Room</th><th>vs Room</th><th>Proj</th><th>Conf</th>'
             '</tr></thead><tbody>%s</tbody></table>'
             '<div class="mut" style="margin-top:8px">&#9733; starts in the optimal '
             'lineup &middot; best buy %s (%+.0f) &middot; worst buy %s (%+.0f)</div></div>'

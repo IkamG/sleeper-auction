@@ -20,6 +20,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 SEASON = "2026"
 CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_cache")
+# Project root on sys.path so `sources/` and `valuation.py` resolve no matter
+# which directory the script was launched from.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126 Safari/537.36")
 
@@ -349,7 +354,84 @@ LEAGUE = {"teams": 12, "budget": 200,
 W_MODEL, W_MARKET = 0.55, 0.45
 
 
+def _value_pool_via_module(players, lg):
+    """Delegate the auction math to valuation.py when it is importable.
+
+    That module fixes two things the inline math below gets wrong: tiers cap at
+    MAX_TIER_SIZE so a flat position cannot collapse into one 27-player tier,
+    and its normalisation lands the board on exactly teams*budget instead of
+    leaking a few dollars. It also fills players with no projection from an
+    isotonic points-vs-rank curve rather than dropping them to $1, and returns
+    a real confidence score. Returns None if unavailable, so the caller falls
+    back to the inline implementation.
+    """
+    try:
+        import valuation
+    except ImportError:
+        return None
+    league = {"teams": lg["teams"], "budget": lg["budget"],
+              "scoring": lg.get("scoring", "half_ppr"),
+              "slots": dict(lg["slots"]), "flex_pos": list(lg.get("flex", []))}
+    payload = []
+    for p in players:
+        proj = p.get("proj")
+        payload.append({
+            "key": p["key"], "sleeper_id": p.get("sleeper_id"), "name": p["name"],
+            "pos": p["pos"], "team": p.get("team"), "bye": p.get("bye"),
+            "consensus_rank": p.get("adp"), "adp": p.get("adp"),
+            "adp_stdev": p.get("stdev"),
+            # None, not 0 -- that is what lets the curve fill him in.
+            "proj_pts": float(proj) if proj else None,
+            "market_auction": p.get("market"),
+            "auction_by_source": {}, "adp_by_source": p.get("adp_by") or {},
+            "sources_count": p.get("srcs", 1)})
+    try:
+        out = valuation.compute_base_values(payload, league)
+    except Exception as e:
+        print("valuation module failed (%s); using inline math" % e, file=sys.stderr)
+        return None
+    by_key = {o["key"]: o for o in out}
+    for p in players:
+        o = by_key.get(p["key"])
+        if not o:
+            continue
+        p["base"] = o["base_value"]
+        p["model"] = o.get("model_value")
+        p["market_adj"] = o.get("market_value")
+        p["vorp"] = o.get("vorp")
+        p["tier"] = o.get("tier")
+        p["pos_rank"] = o.get("pos_rank")
+        p["replacement"] = o.get("replacement")
+        p["value_conf"] = o.get("value_conf")
+        p["proj_source"] = o.get("proj_source")
+        p["proj"] = o.get("proj_pts_final") or p.get("proj") or 0.0
+
+    # K and DEF stay $1 -- see the note in the inline path. Freeing those
+    # dollars would otherwise shrink the pool, so redistribute them across the
+    # rest instead of leaking them (the bug the inline version still has).
+    total = lg["teams"] * lg["budget"]
+    size = lg["teams"] * sum(lg["slots"].values())
+    for p in players:
+        if p["pos"] in ("K", "DEF"):
+            p["base"] = 1.0
+            p["vorp"] = 0.0
+    top = sorted(players, key=lambda x: -x["base"])[:size]
+    above = sum(max(0.0, p["base"] - 1) for p in top) or 1.0
+    scale = (total - size) / above
+    for p in players:
+        if p["pos"] not in ("K", "DEF"):
+            p["base"] = round(1 + max(0.0, p["base"] - 1) * scale, 1)
+    return players
+
+
 def value_pool(players, lg=LEAGUE):
+    via = _value_pool_via_module(players, lg)
+    if via is not None:
+        return via
+    return _value_pool_inline(players, lg)
+
+
+def _value_pool_inline(players, lg=LEAGUE):
     teams, budget, slots = lg["teams"], lg["budget"], lg["slots"]
     roster = sum(slots.values())
     pool_size = teams * roster
@@ -654,6 +736,24 @@ class H(BaseHTTPRequestHandler):
                 out = live_board(players, st, int(rid) if rid and rid.isdigit() else None)
                 out["meta"] = POOL["meta"]
                 return self._send(200, json.dumps(out))
+            if path.startswith("/api/user/") and path.endswith("/drafts"):
+                # Username -> draft picker, so a draft id is not required up
+                # front. Uses sleeper_draft.py, which walks leagues then drafts
+                # and normalises each draft's settings.
+                uname = path[len("/api/user/"):-len("/drafts")]
+                try:
+                    import sleeper_draft as sd
+                except ImportError:
+                    return self._send(501, json.dumps(
+                        {"error": "sleeper_draft.py not available"}))
+                u = sd.resolve_user(uname)
+                if not u:
+                    return self._send(404, json.dumps(
+                        {"error": "no such Sleeper user", "detail": uname}))
+                season = q.get("season") or SEASON
+                return self._send(200, json.dumps(
+                    {"user": u, "drafts": sd.user_drafts(u["user_id"], season)},
+                    default=str))
             if path in ("/sitstart", "/api/sitstart"):
                 did = q.get("draft") or ARGS.draft
                 rid = q.get("me") or ARGS.me

@@ -394,6 +394,9 @@ def build_slate(draft_id, roster_id, week):
             "id": pid, "name": pk["name"] or base.get("name"),
             "pos": pk["pos"] or base.get("pos"), "team": team,
             "paid": pk["amount"], "season_value": base.get("base"),
+            "season_tier": base.get("tier"),
+            "value_conf": base.get("value_conf"),
+            "proj_source": base.get("proj_source"),
             "proj": (proj.get(pid) or {}).get("proj"),
             "season_proj": base.get("proj"),
             "opponent": ln.get("opp"), "home": ln.get("home"),
@@ -530,6 +533,12 @@ cornerback projected to cover him -- a genuinely different signal from \
 defense-vs-position, which averages over a whole unit. A strongly negative \
 score against a shadow corner can outweigh a soft team ranking. Use it only \
 for receivers actually listed; the charts are partial.
+- "value_conf" is 0-1 confidence in that player's season valuation, from how \
+many sources covered him and how much they disagreed. A low number means the \
+market itself has not settled on him -- treat his season value as soft.
+- "proj_source" of "curve" means no source published a projection for him and \
+the number was inferred from a points-vs-rank curve. Say so rather than \
+presenting an inferred figure as a real projection.
 - "depth" is the CURRENT depth-chart order (1 = first on the chart) and slot on \
 the player's present team, so unlike snap history it is never stale. \
 depth_chart_position distinguishes slot (SWR) from outside (LWR/RWR); a WR/CB \
