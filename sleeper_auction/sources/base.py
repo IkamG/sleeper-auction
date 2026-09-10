@@ -61,7 +61,7 @@ _NONWORD_RE = re.compile(r"[^a-z0-9 ]")
 _WS_RE = re.compile(r"\s+")
 
 # Cross-source nickname collisions we resolve by hand. MUST stay identical to
-# quick/draftboard.NAME_FIXES -- the board joins adapter keys built here against
+# sleeper_auction.board.NAME_FIXES -- the board joins adapter keys built here against
 # a spine keyed by draftboard.pkey(), so any divergence silently drops a source.
 # NOTE: "kenneth walker iii" / "brian robinson jr" are unreachable, because
 # _SUFFIX_RE already strips the suffix before this lookup runs. Kept verbatim so

@@ -6,8 +6,8 @@ volatility, weather, injury, matchup). Claude then weighs the tradeoffs and
 argues both sides. Claude is never asked to estimate a number it could be
 handed -- it is asked to make the judgment call that the numbers do not settle.
 
-    python3 quick/sitstart.py --draft <id> --me 5 --week 1
-    python3 quick/sitstart.py --draft <id> --me 5 --week 1 --no-ai   # facts only
+    python3 -m sleeper_auction.sitstart --draft <id> --me 5 --week 1
+    python3 -m sleeper_auction.sitstart --draft <id> --me 5 --week 1 --no-ai   # facts only
 """
 import argparse
 import json
@@ -19,14 +19,14 @@ import subprocess
 import sys
 import urllib.request
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import draftboard as db  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from sleeper_auction import board as db  # noqa: E402
 
 SEASON = "2026"
 PRIOR_SEASON = "2025"
 MODEL = "claude-opus-5"
 API_URL = "https://api.anthropic.com/v1/messages"
-CACHE_WRCB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_wrcb")
+CACHE_WRCB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache", "wrcb")
 
 # lat, lon, roof_is_closed. Weather is irrelevant indoors, so domes short-circuit.
 STADIUM = {

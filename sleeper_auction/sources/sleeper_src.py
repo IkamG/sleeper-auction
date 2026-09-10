@@ -33,7 +33,7 @@ try:  # normal package import
 except ImportError:  # running this file directly for testing
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from sources.base import http_get, get_json, record, player_key
-    from sources import base
+    from sleeper_auction.sources import base
 
 
 NAME = "sleeper_src"

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Post-draft analysis: rate every team against market value and room-clearing price.
 
-    python3 quick/analyze.py --draft 1389690785410064385
-    python3 quick/analyze.py --draft <id> --html out.html
+    python3 -m sleeper_auction.analysis --draft 1389690785410064385
+    python3 -m sleeper_auction.analysis --draft <id> --team IkamG
 """
 import argparse
 import collections
@@ -11,8 +11,8 @@ import os
 import statistics
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import draftboard as db  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from sleeper_auction import board as db  # noqa: E402
 
 STARTERS = [("QB", 1), ("RB", 2), ("WR", 2), ("TE", 1), ("K", 1), ("DEF", 1)]
 FLEX_POS = ("RB", "WR", "TE")

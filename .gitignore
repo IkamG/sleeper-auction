@@ -1,7 +1,5 @@
 cache/
-quick/_cache/
+.venv/
 __pycache__/
 *.pyc
 .claude/
-.venv/
-quick/_wrcb/

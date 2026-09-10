@@ -4,7 +4,7 @@ Live value board for a Sleeper **auction** draft. Half-PPR. Python 3.9 stdlib on
 
 ## Run
 
-    python3 quick/draftboard.py --draft 1389690785410064385 --me 5
+    ./run.sh --draft 1389690785410064385 --me 5
 
 Then open http://localhost:8778/?draft=1389690785410064385&me=5
 (the banner also prints a LAN URL so a phone on the same wifi can load it).
@@ -28,6 +28,21 @@ Sleeper's public API exposes completed picks only; there is no public endpoint
 for the player currently on the block. The nomination lookup box covers that —
 type the nominated name, get Live $, your max bid, and a bid/pass verdict.
 
+## Layout
+
+    sleeper_auction/
+      board.py        HTTP server, source aggregation, live auction values
+      analysis.py     post-draft grading vs market and room clearing price
+      sitstart.py     weekly start/sit: Vegas, matchup, usage, AI reasoning
+      valuation.py    VORP -> auction dollars, tiers, confidence
+      sleeper.py      Sleeper API client (drafts, picks, budgets, user lookup)
+      sources/        ranking-source adapters (base, cbs, yahoo, fantasypros,
+                      espn, ffc, sleeper_src)
+    run.sh            launcher; picks the best available interpreter
+    cache/            on-disk HTTP cache (gitignored)
+
+Every module runs standalone: `python3 -m sleeper_auction.sitstart --help`.
+
 ## Sources
 
 Sleeper projections+ADP (native half-PPR, backbone), FantasyFootballCalculator
@@ -37,9 +52,9 @@ is optional; the board degrades to whatever is reachable.
 
 ## Status
 
-`quick/draftboard.py` is the working app and is self-contained.
+`sleeper_auction/board.py` is the app's entry point and HTTP server.
 
-`sources/` holds the ranking-source adapters. `cbs`, `yahoo` and `fantasypros`
+`sleeper_auction/sources/` holds the ranking-source adapters. `cbs`, `yahoo` and `fantasypros`
 are the only way those sources are read. `sleeper_src` and `espn` are preferred
 over the inline fetchers in `draftboard.py` when importable, and the inline
 versions remain as a fallback so a bare checkout of `quick/draftboard.py` still
@@ -54,15 +69,15 @@ The inline version does none of that and simply exits if the call fails.
 `ffc` stays inline: the adapter returns the same ~250 players, so there is
 nothing to gain.
 
-`valuation.py` owns the auction math when importable, with the inline version
-in `draftboard.py` as fallback. It fixes two real bugs the inline math has:
+`sleeper_auction/valuation.py` owns the auction math when importable, with the inline version
+in `board.py` as fallback. It fixes two real bugs the inline math has:
 tiers cap at `MAX_TIER_SIZE` so a flat position cannot collapse into one
 27-player tier, and its normalisation lands on exactly `teams * budget` instead
 of leaking a few dollars. It also fills players with no published projection
 from an isotonic points-vs-rank curve (318 of them, previously stranded at $1)
 and returns a 0-1 `value_conf` from source coverage and disagreement.
 
-`sleeper_draft.py` backs `GET /api/user/<username>/drafts`, so a draft can be
+`sleeper_auction/sleeper.py` backs `GET /api/user/<username>/drafts`, so a draft can be
 found by Sleeper username instead of requiring the id up front.
 
 `value_conf` and `proj_source` flow through to both the analysis page and the

@@ -38,7 +38,7 @@ import bisect
 import math
 
 try:  # keep the position vocabulary identical to the source adapters
-    from sources.base import POSITIONS
+    from sleeper_auction.sources.base import POSITIONS
 except Exception:  # pragma: no cover - valuation must import standalone
     POSITIONS = ("QB", "RB", "WR", "TE", "K", "DEF")
 

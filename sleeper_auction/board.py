@@ -2,7 +2,7 @@
 """Self-contained live auction draft board for Sleeper. Python 3.9 stdlib only.
 
 Deliberately has ZERO imports from the rest of the project so nothing can break it.
-    python3 quick/draftboard.py --draft 1389690785410064385
+    python3 -m sleeper_auction.board --draft 1389690785410064385
 """
 import argparse
 import gzip
@@ -19,7 +19,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 SEASON = "2026"
-CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_cache")
+CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
 # Project root on sys.path so `sources/` and `valuation.py` resolve no matter
 # which directory the script was launched from.
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -137,7 +137,7 @@ def src_sleeper():
     checkout with only this file.
     """
     try:
-        from sources import sleeper_src as _ad
+        from sleeper_auction.sources import sleeper_src as _ad
         rows = _ad.fetch(SEASON, "half_ppr")
         if rows:
             return {r["key"]: {"key": r["key"], "name": r["name"], "pos": r["pos"],
@@ -215,7 +215,7 @@ def src_espn():
     carries a market value, but it fills in the tail for deeper leagues.
     """
     try:
-        from sources import espn as _ad
+        from sleeper_auction.sources import espn as _ad
         rows = _ad.fetch(SEASON, "half_ppr")
         if rows:
             out = {}
@@ -267,7 +267,7 @@ def src_extra():
     got, errs = {}, {}
     for name in EXTRA:
         try:
-            m = importlib.import_module("sources." + name)
+            m = importlib.import_module("sleeper_auction.sources." + name)
             rows = m.fetch(SEASON, "half_ppr")
             d = {}
             for r in rows:
@@ -366,7 +366,7 @@ def _value_pool_via_module(players, lg):
     back to the inline implementation.
     """
     try:
-        import valuation
+        from sleeper_auction import valuation
     except ImportError:
         return None
     league = {"teams": lg["teams"], "budget": lg["budget"],
@@ -742,7 +742,7 @@ class H(BaseHTTPRequestHandler):
                 # and normalises each draft's settings.
                 uname = path[len("/api/user/"):-len("/drafts")]
                 try:
-                    import sleeper_draft as sd
+                    from sleeper_auction import sleeper as sd
                 except ImportError:
                     return self._send(501, json.dumps(
                         {"error": "sleeper_draft.py not available"}))
@@ -760,7 +760,7 @@ class H(BaseHTTPRequestHandler):
                 if not did or not rid:
                     return self._send(400, json.dumps(
                         {"error": "need draft id and roster id (?draft=..&me=..)"}))
-                import sitstart
+                import sleeper_auction.sitstart as sitstart
                 wk = int(q.get("week") or 1)
                 sl = sitstart.build_slate(did, int(rid), wk)
                 ps = sitstart.posture(sl)
@@ -781,7 +781,7 @@ class H(BaseHTTPRequestHandler):
                 did = q.get("draft") or ARGS.draft
                 if not did:
                     return self._send(400, json.dumps({"error": "no draft id"}))
-                import analyze
+                import sleeper_auction.analysis as analyze
                 a = analyze.analyze(did, ensure_pool())
                 if path == "/api/analysis":
                     return self._send(200, json.dumps(a, default=str))
