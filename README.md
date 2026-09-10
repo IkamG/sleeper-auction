@@ -7,6 +7,7 @@ Three tools for a Sleeper **auction** league, half-PPR by default:
 | **Draft board** | Live auction values during the draft, inflation-adjusted as the room spends |
 | **Analysis** | Post-draft grading of every team against market value and the room's own clearing price |
 | **Sit / start** | Weekly start-or-sit calls from Vegas lines, matchups, usage and AI reasoning |
+| **Waivers** | Who to add, what to drop, and how much FAAB to bid |
 
 Python 3.9+, **standard library only**. No install step, no dependencies, no build.
 One optional extra unlocks the AI layer — see [AI analysis](#ai-analysis).
@@ -78,6 +79,36 @@ Final score weights value captured (45%) and best-lineup projected points
 Click any team for a full roster breakdown. Also available as
 `/analysis?text=1` and `/api/analysis`.
 
+### Waivers — `/waivers?week=N`
+
+Ranks every unrostered player on two forces that pull against each other:
+
+- **Need** — weekly points above the player he would actually replace *in your
+  lineup*. A fact about your roster, not about him.
+- **Quality** — his season-long auction value in the abstract. A genuinely
+  valuable player is worth rostering even without a need.
+
+A pure-need model misses league-winners at positions you happen to be set at; a
+pure-quality model tells a team with two elite QBs to bid on a third. Each
+position carries a **hurdle** — the weekly edge required before an upgrade is
+worth a roster spot. It is high at single-slot positions (QB, TE, K, DEF)
+because the backup never plays, and low at RB/WR where a spare slots into the
+flex. A player below his hurdle is still shown, but discounted and capped at
+token FAAB.
+
+**FAAB pricing is anchored on measured demand.** Sleeper publishes how many
+leagues added each player in the last 24 hours, across millions of leagues —
+crowd-sourced waiver demand measured rather than opined. High demand on a
+player who does not help your roster is a reason to let him go, not to chase
+him: demand sets his *price*, not his value to you.
+
+The league's FAAB budget is read from Sleeper, so bids come back in real
+dollars as well as percentages.
+
+Recent r/fantasyfootball posts are pulled from the Atom feed for injury and
+role leads. They are passed to the model as explicitly unverified chatter —
+useful for a lead, never asserted as fact.
+
 ### Sit / start — `/sitstart?week=N`
 
 A deterministic layer computes every number; Claude then argues both sides of
@@ -146,6 +177,7 @@ Option 2 is the default path for most users and costs nothing extra.
       board.py        HTTP server, source aggregation, live auction values
       analysis.py     post-draft grading vs market and room clearing price
       sitstart.py     weekly start/sit
+      waivers.py      waiver wire: pickups, drops, FAAB bids
       valuation.py    VORP -> auction dollars, tiers, confidence
       sleeper.py      Sleeper API client (drafts, picks, budgets, user lookup)
       sources/        ranking-source adapters
@@ -157,6 +189,7 @@ Every module runs standalone:
     python3 -m sleeper_auction.board    --draft <id> --me <n> [--port 8778]
     python3 -m sleeper_auction.analysis --draft <id> [--team <owner>] [--json]
     python3 -m sleeper_auction.sitstart --draft <id> --me <n> --week <n> [--no-ai]
+    python3 -m sleeper_auction.waivers  --draft <id> --me <n> --week <n> [--limit 25]
 
 ### HTTP API
 
@@ -165,7 +198,9 @@ Every module runs standalone:
     GET  /sitstart?week=N                  sit/start   (?text=1, ?noai=1)
     GET  /api/board?draft=&me=             live board JSON, polled every 5s
     GET  /api/analysis?draft=              grades JSON
+    GET  /waivers?week=N                   waiver wire (?text=1, ?noai=1)
     GET  /api/sitstart?draft=&me=&week=    sit/start JSON
+    GET  /api/waivers?draft=&me=&week=     waiver wire JSON
     GET  /api/user/<username>/drafts       find drafts by Sleeper username
     GET  /api/values                       the valued player pool
     POST /api/refresh                      rebuild the source pool
@@ -237,6 +272,14 @@ league.
 - Weather uses the maximum wind across the forecast window rather than the wind
   at kickoff, so it over-flags.
 - WR/CB charts are partial by nature; unlisted receivers are reported unknown.
+- FAAB bids are derived from need, demand and positional scarcity, not from a
+  published expert consensus. Two dedicated FAAB sites were evaluated:
+  [faabtastic](https://www.faabtastic.com/) is sign-in gated with no current
+  season data, and [faablab](https://www.faablab.app/) is a client-rendered app
+  with nothing server-side to read. Sleeper's trending-adds counts are used
+  instead, which are measured rather than opined.
+- Sleeper does not expose FAAB spent to date, so budgets shown are the season
+  budget, not what remains.
 
 ---
 

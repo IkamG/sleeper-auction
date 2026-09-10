@@ -331,8 +331,7 @@ td{padding:8px;text-align:right;border-bottom:1px solid #21262d;white-space:nowr
 .hint{padding:0 20px 4px;color:#8b949e;font-size:12px}
 @media(max-width:900px){.rail{flex:1 1 100%}}
 </style></head><body>
-<div class="nav"><a href="#" data-p="/" id="nav-board">Draft board</a>
-<a href="#" data-p="/analysis" id="nav-analysis">Analysis</a>
+<div class="nav"><a href="#" data-p="/">Draft board</a><a href="#" data-p="/analysis">Analysis</a><a href="#" data-p="/sitstart">Sit / Start</a><a href="#" data-p="/waivers">Waivers</a>
 <span class="navsp"></span><span class="navmut" id="nav-league"></span></div>
 <script>(function(){var qs=location.search||'';
 document.querySelectorAll('.nav a').forEach(function(a){a.href=a.dataset.p+qs;

@@ -687,7 +687,7 @@ def fetch_wrcb(sources):
     return out
 
 
-def _via_cli(system, user_json, images=None, timeout=900):
+def _via_cli(system, user_json, images=None, timeout=900, schema=None):
     """Run the analysis through the local Claude Code CLI in headless mode.
 
     This uses the Claude Code subscription already installed on this machine
@@ -707,7 +707,7 @@ def _via_cli(system, user_json, images=None, timeout=900):
     prompt = (system + "\n\nHere is this week's data:\n" + user_json + img +
               "\n\nRespond with ONLY a JSON object matching this shape, no "
               "markdown fence and no prose around it:\n" +
-              json.dumps(SCHEMA, indent=1))
+              json.dumps(schema or SCHEMA, indent=1))
     cmd = ["claude", "-p", "--output-format", "json"]
     if images:
         cmd += ["--allowed-tools", "Read"]
@@ -744,40 +744,32 @@ def _via_cli(system, user_json, images=None, timeout=900):
     return out
 
 
-def ai_analyze(slate, pos, api_key=None, wrcb=None):
+def run_model(system, user_json, schema, api_key=None, images=None):
+    """Send one structured request to Claude, whichever backend is available.
+
+    Backend priority: an explicit API key (official SDK, else raw HTTP), then
+    the local Claude Code CLI on the user's existing subscription. Shared by
+    every feature that needs the model, so they cannot drift apart.
+    """
     key = api_key or os.environ.get("ANTHROPIC_API_KEY")
     client = _sdk() if key else None
-    user_json = json.dumps({
-        "week": slate["week"], "team": slate["team_name"],
-        "my_projected_total": slate["my_projected"],
-        "opponent_projected_total": slate["opp_projected"],
-        "risk_posture": pos,
-        "dvp_from_season": slate.get("dvp_source", {}).get("season"),
-        "snaps_from_season": slate.get("snap_source", {}).get("season"),
-        "roster": [{k: v for k, v in p.items() if k != "id"}
-                   for p in slate["players"]],
-    }, default=str)
-    # No API key but Claude Code is installed: use the subscription already here.
-    images = fetch_wrcb(wrcb)
     if not key and shutil.which("claude"):
-        return _via_cli(SYSTEM, user_json, images)
+        return _via_cli(system, user_json, images, schema=schema)
     if not key and not client:
         return {"error": "no_api_key",
                 "detail": "Set ANTHROPIC_API_KEY, or install Claude Code to use "
                           "your existing subscription. Every number above is "
                           "computed without either."}
     payload = {
-        "model": MODEL,
-        "max_tokens": 16000,
+        "model": MODEL, "max_tokens": 16000,
         "thinking": {"type": "adaptive"},
         "output_config": {"effort": "high",
-                          "format": {"type": "json_schema", "schema": SCHEMA}},
-        # The rules never change week to week; cache them and pay only for the slate.
-        "system": [{"type": "text", "text": SYSTEM,
+                          "format": {"type": "json_schema", "schema": schema}},
+        "system": [{"type": "text", "text": system,
                     "cache_control": {"type": "ephemeral"}}],
         "messages": [{"role": "user", "content": user_json}],
     }
-    if client:                                   # official SDK path
+    if client:
         try:
             msg = client.messages.create(**payload)
         except Exception as e:
@@ -789,8 +781,7 @@ def ai_analyze(slate, pos, api_key=None, wrcb=None):
             return {"error": "empty_response", "detail": str(msg.stop_reason)}
         out["_via"] = "sdk"
         return out
-
-    req = urllib.request.Request(          # stdlib fallback, same request shape
+    req = urllib.request.Request(
         API_URL, data=json.dumps(payload).encode(),
         headers={"content-type": "application/json", "x-api-key": key,
                  "anthropic-version": "2023-06-01"})
@@ -808,6 +799,21 @@ def ai_analyze(slate, pos, api_key=None, wrcb=None):
         return {"error": "empty_response", "detail": str(body.get("stop_reason"))}
     out["_via"] = "urllib"
     return out
+
+
+def ai_analyze(slate, pos, api_key=None, wrcb=None):
+    user_json = json.dumps({
+        "week": slate["week"], "team": slate["team_name"],
+        "my_projected_total": slate["my_projected"],
+        "opponent_projected_total": slate["opp_projected"],
+        "risk_posture": pos,
+        "dvp_from_season": slate.get("dvp_source", {}).get("season"),
+        "snaps_from_season": slate.get("snap_source", {}).get("season"),
+        "roster": [{k: v for k, v in p.items() if k != "id"}
+                   for p in slate["players"]],
+    }, default=str)
+    return run_model(SYSTEM, user_json, SCHEMA, api_key=api_key,
+                     images=fetch_wrcb(wrcb))
 
 
 # ------------------------------------------------------------------ output
@@ -999,7 +1005,7 @@ tr.st td{background:#111b26}
 @media(max-width:900px){.rail{flex:1 1 100%}}
 </style></head><body>
 <div class="nav"><a href="#" data-p="/">Draft board</a><a href="#" data-p="/analysis">Analysis</a>
-<a href="#" data-p="/sitstart">Sit / Start</a><span class="navsp"></span>
+<a href="#" data-p="/sitstart">Sit / Start</a>\n<a href="#" data-p="/waivers">Waivers</a><span class="navsp"></span>
 <span class="navmut">week __WK__</span></div>
 <script>(function(){var qs=location.search||'';
 document.querySelectorAll('.nav a').forEach(function(a){a.href=a.dataset.p+qs;

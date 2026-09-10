@@ -775,6 +775,24 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps(
                     {"user": u, "drafts": sd.user_drafts(u["user_id"], season)},
                     default=str))
+            if path in ("/waivers", "/api/waivers"):
+                did = q.get("draft") or ARGS.draft
+                rid = q.get("me") or ARGS.me
+                if not did or not rid:
+                    return self._send(400, json.dumps(
+                        {"error": "need draft id and roster id (?draft=..&me=..)"}))
+                from sleeper_auction import waivers
+                wb = waivers.build_board(did, int(rid), int(q.get("week") or 1),
+                                         int(q.get("limit") or 25))
+                ai = None if q.get("noai") else waivers.ai_analyze(wb)
+                if path == "/api/waivers":
+                    return self._send(200, json.dumps({"board": wb, "ai": ai},
+                                                      default=str))
+                if q.get("text"):
+                    return self._send(200, waivers.report(wb, ai),
+                                      "text/plain; charset=utf-8")
+                return self._send(200, waivers.html_report(wb, ai),
+                                  "text/html; charset=utf-8")
             if path in ("/sitstart", "/api/sitstart"):
                 did = q.get("draft") or ARGS.draft
                 rid = q.get("me") or ARGS.me
@@ -876,7 +894,7 @@ tr.poor{opacity:.34}
 </style></head><body>
 <div class="nav"><a href="#" data-p="/" id="nav-board">Draft board</a>
 <a href="#" data-p="/analysis" id="nav-analysis">Analysis</a>
-<a href="#" data-p="/sitstart">Sit / Start</a>
+<a href="#" data-p="/sitstart">Sit / Start</a>\n<a href="#" data-p="/waivers">Waivers</a>
 <span class="navsp"></span><span class="navmut" id="nav-league"></span></div>
 <script>(function(){var qs=location.search||'';
 document.querySelectorAll('.nav a').forEach(function(a){a.href=a.dataset.p+qs;
