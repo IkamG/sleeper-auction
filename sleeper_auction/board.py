@@ -839,6 +839,43 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps(
                     {"status": j["status"], "html": j.get("html"),
                      "result": j.get("result")}, default=str))
+            if path in ("/lookahead", "/api/lookahead"):
+                did = q.get("draft") or ARGS.draft
+                rid = q.get("me") or ARGS.me
+                if not did or not rid:
+                    return self._send(400, json.dumps(
+                        {"error": "need draft id and roster id (?draft=..&me=..)"}))
+                from sleeper_auction import lookahead
+                lb = lookahead.stash_board(did, int(rid),
+                                           int(q.get("limit") or 20))
+                job = None
+                ai = None
+                if not q.get("noai"):
+                    rf = bool(q.get("refresh"))
+                    jid = "la-%s-%s" % (did, rid)
+                    if rf:
+                        with JOBS["lock"]:
+                            JOBS["items"].pop(jid, None)
+                    if path == "/api/lookahead":
+                        ai = lookahead.ai_analyze(lb, refresh=rf)
+                    else:
+                        job = start_job(jid,
+                                        lambda: lookahead.ai_analyze(lb, refresh=rf),
+                                        lookahead.ai_cards)
+                        if job["status"] != "pending":
+                            ai = job.get("result")
+                if path == "/api/lookahead":
+                    return self._send(200, json.dumps({"board": lb, "ai": ai},
+                                                      default=str))
+                if q.get("text"):
+                    return self._send(200, lookahead.report(lb, ai),
+                                      "text/plain; charset=utf-8")
+                return self._send(
+                    200, lookahead.html_report(
+                        lb, ai,
+                        job_id=("la-%s-%s" % (did, rid))
+                        if job and job["status"] == "pending" else None),
+                    "text/html; charset=utf-8")
             if path in ("/waivers", "/api/waivers"):
                 did = q.get("draft") or ARGS.draft
                 rid = q.get("me") or ARGS.me
@@ -997,7 +1034,7 @@ tr.poor{opacity:.34}
 .cliff{color:#f85149;font-weight:600}
 #err{display:none;padding:9px 16px;background:#3a1518;color:#f85149;font-size:13px}
 </style></head><body>
-<div class="nav"><a href="#" data-p="/sitstart">Sit / Start</a><a href="#" data-p="/waivers">Waivers</a><a href="#" data-p="/board">Draft board</a><a href="#" data-p="/analysis">Analysis</a><span class="navsp"></span><span class="navmut" id="nav-league"></span></div>
+<div class="nav"><a href="#" data-p="/sitstart">Sit / Start</a><a href="#" data-p="/waivers">Waivers</a><a href="#" data-p="/lookahead">Look Ahead</a><a href="#" data-p="/board">Draft board</a><a href="#" data-p="/analysis">Analysis</a><span class="navsp"></span><span class="navmut" id="nav-league"></span></div>
 <script>(function(){var qs=location.search||'';
 document.querySelectorAll('.nav a').forEach(function(a){a.href=a.dataset.p+qs;
   if(location.pathname===a.dataset.p)a.className='on';});})();</script>

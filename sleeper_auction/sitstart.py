@@ -1333,6 +1333,7 @@ body{margin:0;background:#0d1117;color:#e6edf3;font:14px/1.5 -apple-system,Blink
 .nav{display:flex;gap:2px;align-items:center;padding:0 14px;background:#0b0f14;border-bottom:1px solid #30363d}
 .nav a{padding:11px 15px;color:#8b949e;text-decoration:none;font-size:13px;font-weight:600;border-bottom:2px solid transparent}
 .nav a:hover{color:#e6edf3}.nav a.on{color:#fff;border-bottom-color:#1f6feb}
+.wksel{color:#8b949e;font-size:12px;padding-right:6px}.wksel select{background:#161b22;color:#e6edf3;border:1px solid #30363d;border-radius:5px;padding:3px 6px;font:inherit;margin-left:4px}
 .navsp{flex:1}.navmut{color:#8b949e;font-size:12px}
 .hd{padding:16px 20px;background:#161b22;border-bottom:1px solid #30363d}
 .hd h1{margin:0;font-size:20px}
@@ -1370,8 +1371,14 @@ tr.st td{background:#111b26}
 @keyframes sp{to{transform:rotate(360deg)}}
 @media(max-width:900px){.rail{flex:1 1 100%}}
 </style></head><body>
-<div class="nav"><a href="#" data-p="/sitstart">Sit / Start</a><a href="#" data-p="/waivers">Waivers</a><a href="#" data-p="/board">Draft board</a><a href="#" data-p="/analysis">Analysis</a><span class="navsp"></span>
+<div class="nav"><a href="#" data-p="/sitstart">Sit / Start</a><a href="#" data-p="/waivers">Waivers</a><a href="#" data-p="/lookahead">Look Ahead</a><a href="#" data-p="/board">Draft board</a><a href="#" data-p="/analysis">Analysis</a><span class="navsp"></span><span class="wksel">week <select id="wk" onchange="var u=new URL(location.href);u.searchParams.set('week',this.value);u.searchParams.delete('refresh');location.href=u"></select></span>
 <span class="navmut">week __WK__</span></div>
+<script>(function(){
+var sel=document.getElementById('wk'); if(!sel) return;
+var cur=parseInt(new URLSearchParams(location.search).get('week')||'__WK__',10);
+for(var i=1;i<=18;i++){var o=document.createElement('option');
+ o.value=i;o.textContent=i;if(i===cur)o.selected=true;sel.appendChild(o);}
+})();</script>
 <script>(function(){var qs=location.search||'';
 var here=location.pathname==='/'?'/sitstart':location.pathname;
 document.querySelectorAll('.nav a').forEach(function(a){a.href=a.dataset.p+qs;

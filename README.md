@@ -6,6 +6,7 @@ Four tools for a Sleeper **auction** league, half-PPR by default:
 |---|---|
 | **Sit / start** | Weekly start-or-sit calls from Vegas lines, matchups, usage and AI reasoning |
 | **Waivers** | Who to add, what to drop, and how much FAAB to bid |
+| **Look ahead** | Long-term roster weak points, and stashes that pay off later |
 | **Draft board** | Live auction values during the draft, inflation-adjusted as the room spends |
 | **Analysis** | Post-draft grading of every team against market value and the room's own clearing price |
 
@@ -124,6 +125,41 @@ Recent r/fantasyfootball posts are pulled from the Atom feed for injury and
 role leads. They are passed to the model as explicitly unverified chatter —
 useful for a lead, never asserted as fact.
 
+### Look ahead — `/lookahead`
+
+Answers the question that decides a season rather than a week: who is being
+under-used relative to how well he performs, and where does this roster break
+in six weeks.
+
+The core signal is the **opportunity gap** — efficiency percentile minus usage
+percentile, within position. Backs are judged on yards per carry, receivers on
+yards per target.
+
+> A back at 5.4 yards a carry on eight touches a game is not a good player
+> being wasted by accident; he is a coaching decision, and those reverse. A
+> back at 3.6 on twenty touches has his job because nobody better is there —
+> there is no gap to close, and the job can be taken from him.
+
+Your own starters carry the same number, so a negative gap flags a job at risk
+even while the player is still producing.
+
+Candidates are tagged by *why* they are worth a bench spot:
+
+| Tag | Means |
+|---|---|
+| `efficient-unused` | Produces per touch, isn't given touches. The strongest standalone signal. |
+| `handcuff` | Directly behind a workhorse. Insurance — pays only on an injury. |
+| `open-committee` | No back on that team owns the job. Upside needs no injury. |
+| `rookie-in-line` | Rookie already first or second on the depth chart. |
+| `red-zone role` | Scoring chances without volume. Touchdown-dependent. |
+
+Age is a direct discount — a stash is a bet on future value, and a 31-year-old
+career backup with a great per-touch rate has no career arc left for the role
+to arrive in. Players on IR or PUP are excluded.
+
+The rail shows **thin positions** (no bench cover) and **bye clusters**
+(several starters idle the same week).
+
 ### Draft board — `/board`
 
 Polls Sleeper every 5 seconds, drops drafted players, and re-prices everyone
@@ -208,6 +244,7 @@ scripted caller wants the whole answer in one response.
       analysis.py     post-draft grading vs market and room clearing price
       sitstart.py     weekly start/sit
       waivers.py      waiver wire: pickups, drops, FAAB bids
+      lookahead.py    long-term weak points and stash candidates
       valuation.py    VORP -> auction dollars, tiers, confidence
       sleeper.py      Sleeper API client (drafts, picks, budgets, user lookup)
       sources/        ranking-source adapters
@@ -220,6 +257,7 @@ Every module runs standalone:
     python3 -m sleeper_auction.analysis --draft <id> [--team <owner>] [--json]
     python3 -m sleeper_auction.sitstart --draft <id> --me <n> --week <n> [--no-ai]
     python3 -m sleeper_auction.waivers  --draft <id> --me <n> --week <n> [--limit 25]
+    python3 -m sleeper_auction.lookahead --draft <id> --me <n> [--limit 20]
 
 ### HTTP API
 
@@ -231,6 +269,8 @@ Every module runs standalone:
     GET  /api/board?draft=&me=             live board JSON, polled every 5s
     GET  /api/analysis?draft=              grades JSON
     GET  /waivers?week=N                   waiver wire (?text=1, ?noai=1)
+    GET  /lookahead                        long-term outlook and stashes
+    GET  /api/lookahead?draft=&me=         look-ahead JSON
     GET  /api/sitstart?draft=&me=&week=    sit/start JSON
     GET  /api/waivers?draft=&me=&week=     waiver wire JSON
     GET  /api/user/<username>/drafts       find drafts by Sleeper username
