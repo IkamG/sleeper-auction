@@ -851,11 +851,16 @@ class H(BaseHTTPRequestHandler):
                 job = None
                 ai = None
                 if not q.get("noai"):
+                    rf = bool(q.get("refresh"))
                     jid = "wv-%s-%s-%s" % (did, rid, q.get("week") or 1)
+                    if rf:
+                        with JOBS["lock"]:
+                            JOBS["items"].pop(jid, None)
                     if path == "/api/waivers":
-                        ai = waivers.ai_analyze(wb)                 # API stays sync
+                        ai = waivers.ai_analyze(wb, refresh=rf)
                     else:
-                        job = start_job(jid, lambda: waivers.ai_analyze(wb),
+                        job = start_job(jid,
+                                        lambda: waivers.ai_analyze(wb, refresh=rf),
                                         waivers.ai_cards)
                         if job["status"] != "pending":
                             ai = job.get("result")
@@ -888,13 +893,19 @@ class H(BaseHTTPRequestHandler):
                 job = None
                 ai = None
                 if not q.get("noai"):
-                    jid = "ss-%s-%s-%s" % (did, rid, wk)
+                    rf = bool(q.get("refresh"))
+                    # Phase in the job id so a pre-week read, a live Sunday read
+                    # and the post-week retrospective are distinct analyses.
+                    jid = "ss-%s-%s-%s-%s" % (did, rid, wk, sl.get("phase"))
+                    if rf:
+                        with JOBS["lock"]:
+                            JOBS["items"].pop(jid, None)
                     if path == "/api/sitstart":
-                        ai = sitstart.ai_analyze(sl, ps, wrcb=wr)   # API stays sync
+                        ai = sitstart.ai_analyze(sl, ps, wrcb=wr, refresh=rf)
                     else:
                         job = start_job(
                             jid,
-                            lambda: sitstart.ai_analyze(sl, ps, wrcb=wr),
+                            lambda: sitstart.ai_analyze(sl, ps, wrcb=wr, refresh=rf),
                             sitstart.ai_cards)
                         if job["status"] != "pending":
                             ai = job.get("result")
@@ -907,8 +918,8 @@ class H(BaseHTTPRequestHandler):
                 return self._send(
                     200, sitstart.html_report(
                         sl, ps, ai,
-                        job_id=("ss-%s-%s-%s" % (did, rid, wk)) if job and
-                        job["status"] == "pending" else None),
+                        job_id=("ss-%s-%s-%s-%s" % (did, rid, wk, sl.get("phase")))
+                        if job and job["status"] == "pending" else None),
                     "text/html; charset=utf-8")
             if path in ("/analysis", "/api/analysis"):
                 did = q.get("draft") or ARGS.draft

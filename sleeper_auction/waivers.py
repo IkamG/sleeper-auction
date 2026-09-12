@@ -405,7 +405,7 @@ a fact. Never state something as true because a post title said it.
 Be decisive and brief. Rank by what actually improves this lineup."""
 
 
-def ai_analyze(board, api_key=None):
+def ai_analyze(board, api_key=None, refresh=False):
     payload = json.dumps({
         "week": board["week"], "team": board["team_name"],
         "flex_bar": board["flex_bar"],
@@ -416,7 +416,10 @@ def ai_analyze(board, api_key=None):
                        for c in board["candidates"]],
         "news": [n["title"] for n in board["news"][:25]],
     }, default=str)
-    return sitstart.run_model(SYSTEM, payload, SCHEMA, api_key=api_key)
+    key = "waivers-%s-w%s" % (board.get("roster_id"), board.get("week"))
+    return sitstart.cached_ai(
+        key, lambda: sitstart.run_model(SYSTEM, payload, SCHEMA, api_key=api_key),
+        refresh=refresh)
 
 
 # ------------------------------------------------------------------ output

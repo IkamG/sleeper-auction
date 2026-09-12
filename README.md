@@ -43,6 +43,19 @@ A deterministic layer computes every number; Claude then argues both sides of
 each call. **Claude is never asked to estimate a number it could be handed** —
 it is asked for the judgment the numbers do not settle.
 
+The page answers a different question depending on **phase**, detected from
+real game states:
+
+| Phase | Page reads | What it does |
+|---|---|---|
+| **pre** | `sit / start` | Every player is a decision. Argue both sides, commit. |
+| **mid** | `live` | Started games are results, not decisions. Verdicts are given only for players who have not kicked off, weighed against the **live** margin. Banked points are shown for both sides. |
+| **post** | `results` | No verdicts. A retrospective: who beat their projection, who missed, which pre-game signals actually predicted it, and which were variance. |
+
+Both totals are computed the same way — actual points for finished games,
+projections for the rest — so the margin never compares a live number against a
+pre-game one.
+
 The risk posture is arithmetic, not preference. Projected as a heavy favourite,
 you take the floor, because a zero is the only way to lose. As a heavy
 underdog, you start the boom/bust player *deliberately*, because a median week
@@ -177,6 +190,11 @@ ready. A reload while it is thinking reuses the running job rather than paying
 for the same analysis twice, and a finished one is served straight from cache.
 
     GET /api/ai/<job_id>    -> {status: pending|done|error, html, result}
+
+**Analyses are cached permanently**, keyed by week *and phase*, so a pre-week
+read, a Sunday-evening read and the post-week retrospective are three separate
+stored answers rather than one overwriting the next. Nothing re-runs on its
+own; append `?refresh=1` or click **re-run** on a cached panel to rebuild it.
 
 The JSON endpoints (`/api/sitstart`, `/api/waivers`) stay synchronous, since a
 scripted caller wants the whole answer in one response.

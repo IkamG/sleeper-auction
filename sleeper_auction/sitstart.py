@@ -97,6 +97,62 @@ def vegas(week):
     return out
 
 
+def game_states(week, season=SEASON):
+    """Per-team game state: pre, in, or post.
+
+    This is what separates a decision from a result. A player whose game has
+    kicked off is not a sit/start question any more -- he is a fact -- and
+    conflating the two is how a lineup tool becomes useless by Sunday evening.
+    """
+    d = db.gj("%s/scoreboard?week=%s&seasontype=2&dates=%s" % (ESPN, week, season),
+              headers=ESPN_HDRS, key="espn-sb-%s-%s" % (season, week), ttl=300)
+    out = {}
+    for ev in d.get("events", []):
+        comp = (ev.get("competitions") or [{}])[0]
+        st = ((comp.get("status") or {}).get("type") or {})
+        for c in comp.get("competitors", []):
+            ab = db.nteam((c.get("team") or {}).get("abbreviation"))
+            if ab:
+                out[ab] = {"state": st.get("state"), "detail": st.get("detail"),
+                           "completed": bool(st.get("completed")),
+                           "kickoff": ev.get("date"),
+                           "score": c.get("score")}
+    return out
+
+
+def actuals(week, season=SEASON):
+    """Half-PPR points actually scored so far this week."""
+    pos = "&".join("position[]=" + p for p in ("QB", "RB", "WR", "TE", "K", "DEF"))
+    try:
+        d = db.gj("https://api.sleeper.com/stats/nfl/%s/%s?season_type=regular&%s"
+                  "&order_by=pts_half_ppr" % (season, week, pos),
+                  key="slp-act-%s-%s" % (season, week), ttl=300)
+    except Exception:
+        return {}
+    out = {}
+    for row in d:
+        pid = str(row.get("player_id") or "")
+        st = row.get("stats") or {}
+        if pid and st.get("pts_half_ppr") is not None:
+            out[pid] = {"actual": float(st["pts_half_ppr"]),
+                        "snaps_pct": st.get("off_snp"),
+                        "gp": st.get("gp")}
+    return out
+
+
+def week_phase(players, games):
+    """pre, mid or post -- which question the page should be answering."""
+    states = [(p.get("game_state") or {}).get("state") for p in players]
+    states = [x for x in states if x]
+    if not states:
+        return "pre"
+    if all(x == "post" for x in states):
+        return "post"
+    if any(x in ("in", "post") for x in states):
+        return "mid"
+    return "pre"
+
+
 def week_projections(week, season=SEASON):
     """Sleeper's native half-PPR weekly projections."""
     pos = "&".join("position[]=" + p for p in ("QB", "RB", "WR", "TE", "K", "DEF"))
@@ -341,6 +397,8 @@ def league_matchup(league_id, roster_id, week):
     return {"matchup_id": mine.get("matchup_id"),
             "my_starters": mine.get("starters") or [],
             "opp_roster_id": opp.get("roster_id") if opp else None,
+            "opp_starters": (opp.get("starters") or []) if opp else [],
+            "opp_points": (opp.get("points") if opp else None),
             "opp_players": (opp.get("players") or []) if opp else []}
 
 
@@ -376,6 +434,8 @@ def build_slate(draft_id, roster_id, week):
     proj = week_projections(week)
     vol = volatility()
     inj = injuries()
+    gs = game_states(week)
+    act = actuals(week)
     dvp = def_vs_position()
     snaps = snap_trend()
     depth = depth_charts()
@@ -411,15 +471,66 @@ def build_slate(draft_id, roster_id, week):
             "injury": inj.get(db.nname(pk["name"] or "")),
             "weather": wx,
             "starting": pid in (mu or {}).get("my_starters", []),
+            "game_state": gs.get(team),
+            "locked": (gs.get(team) or {}).get("state") in ("in", "post"),
+            "actual": (act.get(pid) or {}).get("actual"),
         })
     players.sort(key=lambda p: -(p["proj"] or 0))
 
+    for pl in players:
+        if pl.get("actual") is not None and pl.get("proj") is not None:
+            pl["vs_proj"] = round(pl["actual"] - pl["proj"], 2)
+            pl["vs_proj_pct"] = (round(100 * (pl["actual"] / pl["proj"] - 1))
+                                 if pl["proj"] else None)
+        else:
+            pl["vs_proj"] = None
+            pl["vs_proj_pct"] = None
+    phase = week_phase(players, gs)
+    started = [p for p in players if p["starting"]]
+    locked_pts = round(sum(p["actual"] or 0 for p in started if p["locked"]), 1)
+    for pl in players:
+        gsx = pl.get("game_state") or {}
+        if gsx.get("state") == "post" and pl.get("actual") is None:
+            # Game is final and he has no stats line: he scored nothing, or was
+            # inactive. Either way his projection is spent, not pending.
+            pl["actual"] = 0.0
+            pl["dnp"] = True
+            pl["vs_proj"] = round(-(pl.get("proj") or 0), 2)
+    live_proj = round(sum((p["actual"] if p["locked"] and p["actual"] is not None
+                           else (p["proj"] or 0)) for p in started), 1)
     my_total = round(sum(p["proj"] or 0 for p in players if p["starting"]), 1)
+    # The opponent's number has to be computed the same way as ours, or the
+    # margin is comparing a live total against a pre-game one. Use their actual
+    # starters, banking real points for finished games.
     opp_total = None
-    if mu and mu.get("opp_players"):
-        opp_total = round(sum((proj.get(x) or {}).get("proj", 0)
-                              for x in mu["opp_players"][:9]), 1)
-    return {"week": week, "season": SEASON, "roster_id": roster_id,
+    opp_locked = 0.0
+    opp_ids = (mu or {}).get("opp_starters") or (mu or {}).get("opp_players", [])[:9]
+    if opp_ids:
+        tot = 0.0
+        for x in opp_ids:
+            if not x or x == "0":
+                continue
+            a = (act.get(x) or {}).get("actual")
+            info = byid.get(x) or {}
+            tm = db.nteam(info.get("team"))
+            gstate = (gs.get(tm) or {}).get("state")   # not `st` -- that is draft_state
+            if gstate == "post":
+                tot += a if a is not None else 0.0
+                opp_locked += a if a is not None else 0.0
+            elif a is not None and gstate == "in":
+                tot += a
+                opp_locked += a
+            else:
+                tot += (proj.get(x) or {}).get("proj", 0) or 0.0
+        opp_total = round(tot, 1)
+    return {"phase": phase, "locked_points": locked_pts,
+            "opp_locked_points": round(opp_locked, 1),
+            "live_projected": live_proj,
+            "games_done": sum(1 for v in gs.values() if v.get("state") == "post") // 2,
+            "games_total": max(1, len(gs) // 2),
+            "decisions_left": [p["name"] for p in players
+                               if not p["locked"] and p["pos"] not in ("K", "DEF")],
+            "week": week, "season": SEASON, "roster_id": roster_id,
             "players": players, "matchup": mu,
             "dvp_source": {"season": dvp["season"], "weeks": dvp["weeks"]},
             "snap_source": {"season": snaps["season"]},
@@ -435,6 +546,23 @@ def posture(slate):
     game, so the boom/bust player is the correct play precisely because he is
     boom/bust. Same player, opposite call, depending on the opponent.
     """
+    if slate.get("phase") in ("mid", "post"):
+        # Mid-week, the pre-game projection is history. What matters is banked
+        # points plus what is still to come.
+        me, opp = slate.get("live_projected"), slate.get("opp_projected")
+        if me and opp:
+            m = round(me - opp, 1)
+            left = len(slate.get("decisions_left") or [])
+            if slate["phase"] == "post":
+                return {"mode": "final", "margin": m,
+                        "guidance": "Week complete. %s by %.1f."
+                                    % ("Ahead" if m > 0 else "Behind", abs(m))}
+            return {"mode": "live", "margin": m, "decisions_left": left,
+                    "guidance": "%.1f live vs %.1f, %s by %.1f with %d starter%s "
+                                "still to play. Only unlocked players are still "
+                                "a decision." % (
+                                    me, opp, "ahead" if m > 0 else "behind",
+                                    abs(m), left, "" if left == 1 else "s")}
     me, opp = slate.get("my_projected"), slate.get("opp_projected")
     if not me or not opp:
         return {"mode": "neutral", "margin": None,
@@ -491,6 +619,25 @@ SCHEMA = {
         },
         "lineup_call": {"type": "string"},
         "biggest_risk": {"type": "string"},
+        "results": {
+            "type": "array",
+            "description": "mid/post week only: one entry per player whose game "
+                           "has started or finished",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["name", "outcome", "explanation"],
+                "properties": {
+                    "name": {"type": "string"},
+                    "outcome": {"type": "string",
+                                "enum": ["BEAT", "MET", "MISSED", "DNP"]},
+                    "explanation": {"type": "string"},
+                    "predictable": {"type": "string",
+                                    "description": "was this knowable in advance, "
+                                                   "or variance"},
+                },
+            },
+        },
     },
 }
 
@@ -550,6 +697,29 @@ projection instead; do not present it as current.
 between them. A rising share is the strongest start signal in this data; a \
 falling one is the earliest sign a projection is stale. Snap share for a \
 committee back matters more than his projection.
+
+PHASE. The payload's "phase" says which question you are answering, and it \
+changes the job completely:
+
+- "pre": nothing has kicked off. Every player is a decision. Argue both sides \
+and commit.
+- "mid": some games are final or in progress. A player with "locked": true is \
+NOT a decision any more -- he is a result. Do not tell me to start or sit him. \
+For those, explain what happened: compare "actual" against "proj" ("vs_proj" is \
+the gap) and say why, using the data you were given -- implied total, matchup \
+rank, snap share, weather, game script from the spread. Reserve START/SIT \
+verdicts for players whose games have not begun, and weigh them against the \
+live margin, not the pre-game one. A big lead already banked argues for floor; \
+a deficit argues for ceiling, more sharply than before kickoff because there \
+are fewer games left to make it up.
+- "post": every game is done. No verdicts to give. Write the retrospective: who \
+beat their projection and who missed, which of the pre-game signals actually \
+predicted it, and which misled. Be specific about what was knowable in advance \
+versus what was variance -- most single-week misses are variance, and saying so \
+is more honest than inventing a narrative.
+
+A player marked "dnp" had a final game and no stats line: he did not play or \
+did not score. Say which you can and cannot tell from the data.
 
 Be decisive and brief. Two to four pros and cons each, one line apiece. Name the \
 single deciding factor. Where the data is thin or a projection is missing, say \
@@ -744,6 +914,40 @@ def _via_cli(system, user_json, images=None, timeout=900, schema=None):
     return out
 
 
+AI_CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "cache", "ai")
+
+
+def cached_ai(key, work, refresh=False):
+    """Cache a model result on disk forever, keyed by week and phase.
+
+    A week's analysis does not change unless the underlying week does, and each
+    call costs minutes. The phase is part of the key, so a pre-week read, a
+    Sunday-evening read and the post-week retrospective are three separate
+    cached answers rather than one overwriting the next. Pass refresh=True to
+    force a rebuild.
+    """
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", key)
+    path = os.path.join(AI_CACHE, safe + ".json")
+    if not refresh and os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                out = json.load(fh)
+            out["_cached"] = True
+            return out
+        except Exception:
+            pass
+    out = work()
+    if isinstance(out, dict) and not out.get("error"):
+        try:
+            os.makedirs(AI_CACHE, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(out, fh)
+        except Exception:
+            pass
+    return out
+
+
 def run_model(system, user_json, schema, api_key=None, images=None):
     """Send one structured request to Claude, whichever backend is available.
 
@@ -801,31 +1005,48 @@ def run_model(system, user_json, schema, api_key=None, images=None):
     return out
 
 
-def ai_analyze(slate, pos, api_key=None, wrcb=None):
+def ai_analyze(slate, pos, api_key=None, wrcb=None, refresh=False):
     user_json = json.dumps({
         "week": slate["week"], "team": slate["team_name"],
         "my_projected_total": slate["my_projected"],
         "opponent_projected_total": slate["opp_projected"],
-        "risk_posture": pos,
+        "risk_posture": pos, "phase": slate.get("phase"),
+        "locked_points": slate.get("locked_points"),
+        "live_projected": slate.get("live_projected"),
+        "games_done": slate.get("games_done"),
+        "games_total": slate.get("games_total"),
         "dvp_from_season": slate.get("dvp_source", {}).get("season"),
         "snaps_from_season": slate.get("snap_source", {}).get("season"),
         "roster": [{k: v for k, v in p.items() if k != "id"}
                    for p in slate["players"]],
     }, default=str)
-    return run_model(SYSTEM, user_json, SCHEMA, api_key=api_key,
-                     images=fetch_wrcb(wrcb))
+    key = "sitstart-%s-%s-w%s-%s" % (slate.get("roster_id"), slate.get("season"),
+                                     slate.get("week"), slate.get("phase"))
+    return cached_ai(key,
+                     lambda: run_model(SYSTEM, user_json, SCHEMA, api_key=api_key,
+                                       images=fetch_wrcb(wrcb)),
+                     refresh=refresh)
 
 
 # ------------------------------------------------------------------ output
 
 def report(slate, pos, ai=None):
-    o = ["%s -- week %s sit/start" % (slate["team_name"], slate["week"]),
-         "projected %s vs opponent %s  ->  posture: %s"
-         % (slate["my_projected"], slate["opp_projected"], pos["mode"].upper()),
+    ph = slate.get("phase", "pre")
+    head = {"pre": "sit/start", "mid": "live", "post": "results"}[ph]
+    o = ["%s -- week %s %s  (%d/%d games final)"
+         % (slate["team_name"], slate["week"], head,
+            slate.get("games_done", 0), slate.get("games_total", 0)),
+         ("live %s vs %s (banked %s)" % (slate.get("live_projected"),
+                                         slate.get("opp_projected"),
+                                         slate.get("locked_points"))
+          if ph != "pre" else
+          "projected %s vs opponent %s" % (slate["my_projected"],
+                                           slate["opp_projected"]))
+         + "  ->  posture: %s" % pos["mode"].upper(),
          "  " + pos["guidance"], ""]
-    o.append("%-1s %-22s %-4s %-6s %-6s %-7s %-13s %-9s %-8s %s"
-             % ("", "PLAYER", "POS", "PROJ", "IMPL", "VS", "FLOOR/CEIL",
-                "DvP", "SNAP%", "NOTE"))
+    o.append("%-1s %-22s %-4s %-6s %-7s %-6s %-7s %-13s %-9s %s"
+             % ("", "PLAYER", "POS", "PROJ", "ACTUAL", "IMPL", "VS",
+                "FLOOR/CEIL", "DvP", "NOTE"))
     o.append("-" * 112)
     for p in slate["players"]:
         v = p["volatility"] or {}
@@ -847,14 +1068,20 @@ def report(slate, pos, ai=None):
         if dp.get("order"):
             note.append("depth %s%s" % (dp["order"],
                                         "/" + dp["slot"] if dp.get("slot") else ""))
-        o.append("%-1s %-22s %-4s %-6s %-6s %-7s %-13s %-9s %-8s %s" % (
+        act = "-"
+        if p.get("actual") is not None:
+            act = "%.1f%s" % (p["actual"],
+                              (" %+.0f" % p["vs_proj"]) if p.get("vs_proj") else "")
+        elif p.get("locked"):
+            act = "live"
+        o.append("%-1s %-22s %-4s %-6s %-7s %-6s %-7s %-13s %-9s %s" % (
             "*" if p["starting"] else "", (p["name"] or "?")[:22], p["pos"],
             p["proj"] if p["proj"] is not None else "-",
+            act,
             p["implied_total"] if p["implied_total"] is not None else "-",
             ("%s%s" % ("@" if not p["home"] else "", p["opponent"] or "?")),
             "%s / %s" % (v.get("floor", "-"), v.get("ceiling", "-")),
             ("#%s %s" % (dv["rank"], dv["ppg"]) if dv.get("rank") else "-"),
-            ("%s%%" % sn["recent_pct"] if sn.get("recent_pct") else "-"),
             ", ".join(note)))
     o.append("")
     o.append("* = in your Sleeper starting lineup | DvP = opponent rank (1=toughest)"
@@ -875,6 +1102,13 @@ def report(slate, pos, ai=None):
                 o.append("    +  %s" % x)
             for x in p.get("cons", []):
                 o.append("    -  %s" % x)
+        o.append("")
+        for r in ai.get("results", []):
+            o.append("")
+            o.append("  %s -- %s" % (r["name"], r["outcome"]))
+            o.append("    %s" % r["explanation"])
+            if r.get("predictable"):
+                o.append("    knowable? %s" % r["predictable"])
         o.append("")
         o.append("  LINEUP: %s" % ai.get("lineup_call", ""))
         if ai.get("biggest_risk"):
@@ -908,9 +1142,13 @@ def ai_cards(ai):
                 p["deciding_factor"],
                 "".join("<div>+ %s</div>" % x for x in p.get("pros", [])),
                 "".join("<div>&minus; %s</div>" % x for x in p.get("cons", []))))
-    return ('<div class="panel"><h3>AI analysis</h3><div class="read">%s</div>'
+    stamp = ('<a class="rerun" href="#" onclick="var u=new URL(location.href);'
+             'u.searchParams.set(\'refresh\',\'1\');location.href=u;return false">'
+             'cached &middot; re-run</a>' if ai.get("_cached") else "")
+    return ('<div class="panel"><h3>AI analysis %s</h3><div class="read">%s</div>'
             '</div>%s<div class="panel"><h3>Lineup call</h3><div>%s</div>%s</div>'
-            % (ai.get("posture_read", ""), cards, ai.get("lineup_call", ""),
+            % (stamp, ai.get("posture_read", ""), cards,
+               ai.get("lineup_call", ""),
                '<div class="mut" style="margin-top:8px">Biggest risk: %s</div>'
                % ai["biggest_risk"] if ai.get("biggest_risk") else ""))
 
@@ -963,12 +1201,18 @@ def html_report(slate, pos, ai=None, job_id=None):
         rows.append(
             '<tr class="%s"><td>%s</td><td class="nm">%s</td>'
             '<td><span class="pos %s">%s</span></td><td class="big">%s</td>'
+            '<td class="%s">%s</td>'
             '<td>%s</td><td class="mut">%s%s</td><td class="mut">%s</td>'
             '<td class="mut">%s / %s</td><td class="%s">%s</td>'
             '<td class="mut">%s</td><td class="mut">%s</td></tr>' % (
                 "st" if p["starting"] else "", "&#9733;" if p["starting"] else "",
                 p["name"], p["pos"], p["pos"],
                 p["proj"] if p["proj"] is not None else "&mdash;",
+                ("pl" if (p.get("vs_proj") or 0) > 0 else
+                 "mn" if p.get("actual") is not None else "mut"),
+                (("%.1f %+.0f" % (p["actual"], p.get("vs_proj") or 0))
+                 if p.get("actual") is not None
+                 else ("live" if p.get("locked") else "&mdash;")),
                 p["implied_total"] if p["implied_total"] is not None else "&mdash;",
                 "@" if not p["home"] else "", p["opponent"] or "?",
                 p["spread"] if p["spread"] is not None else "&mdash;",
@@ -987,8 +1231,20 @@ def html_report(slate, pos, ai=None, job_id=None):
     return SS_TPL.replace("__ROWS__", "".join(rows)).replace("__AI__", cards) \
         .replace("__TEAM__", str(slate["team_name"])).replace("__WK__", str(slate["week"])) \
         .replace("__MODE__", pos["mode"].upper()).replace("__GUIDE__", pos["guidance"]) \
-        .replace("__MINE__", str(slate["my_projected"])) \
-        .replace("__OPP__", str(slate["opp_projected"]))
+        .replace("__HEAD__", {"pre": "sit / start", "mid": "live",
+                              "post": "results"}.get(slate.get("phase"),
+                                                     "sit / start")) \
+        .replace("__MINE__", str(slate["live_projected"]
+                                 if slate.get("phase") in ("mid", "post")
+                                 else slate["my_projected"])) \
+        .replace("__OPP__", str(slate["opp_projected"])) \
+        .replace("__BANKED__",
+                 ('<span class="mut"> &middot; banked %s vs %s &middot; %d/%d games'
+                  ' final</span>' % (slate.get("locked_points"),
+                                     slate.get("opp_locked_points"),
+                                     slate.get("games_done", 0),
+                                     slate.get("games_total", 0)))
+                 if slate.get("phase") in ("mid", "post") else "")
 
 
 SS_TPL = r"""<!doctype html><html><head><meta charset="utf-8">
@@ -1031,7 +1287,7 @@ tr.st td{background:#111b26}
 .pc{display:flex;gap:16px;flex-wrap:wrap;font-size:13px}
 .pc>div{flex:1 1 240px}.pc h4{margin:0 0 4px;font-size:11px;text-transform:uppercase}
 .pc div div{padding:2px 0;color:#c9d1d9}
-.read{font-size:13px;color:#c9d1d9}
+.read{font-size:13px;color:#c9d1d9}\n.rerun{float:right;font-size:10px;color:#58a6ff;text-decoration:none;text-transform:none;letter-spacing:0;font-weight:400}.rerun:hover{text-decoration:underline}
 .spin{display:inline-block;width:11px;height:11px;border:2px solid #30363d;border-top-color:#58a6ff;border-radius:50%;animation:sp .8s linear infinite;vertical-align:-1px;margin-right:5px}
 @keyframes sp{to{transform:rotate(360deg)}}
 @media(max-width:900px){.rail{flex:1 1 100%}}
@@ -1042,12 +1298,13 @@ tr.st td{background:#111b26}
 var here=location.pathname==='/'?'/sitstart':location.pathname;
 document.querySelectorAll('.nav a').forEach(function(a){a.href=a.dataset.p+qs;
  if(here===a.dataset.p)a.className='on';});})();</script>
-<div class="hd"><h1>__TEAM__ &mdash; week __WK__ sit / start</h1>
-<div class="post">You <b>__MINE__</b> vs opponent <b>__OPP__</b> &nbsp;&rarr;&nbsp;
-posture <b>__MODE__</b><div class="mut" style="margin-top:4px">__GUIDE__</div></div></div>
+<div class="hd"><h1>__TEAM__ &mdash; week __WK__ __HEAD__</h1>
+<div class="post">You <b>__MINE__</b> vs opponent <b>__OPP__</b>__BANKED__
+&nbsp;&rarr;&nbsp; posture <b>__MODE__</b>
+<div class="mut" style="margin-top:4px">__GUIDE__</div></div></div>
 <div class="wrap">
  <div class="main"><div class="panel" style="padding:0"><table>
-  <thead><tr><th></th><th>Player</th><th>Pos</th><th>Proj</th><th>Team total</th>
+  <thead><tr><th></th><th>Player</th><th>Pos</th><th>Proj</th><th>Actual</th><th>Team total</th>
   <th>Opp</th><th>Spread</th><th>Floor / Ceil</th><th>DvP</th><th>Snap%</th>
   <th>Flags</th></tr></thead>
   <tbody>__ROWS__</tbody></table></div>
