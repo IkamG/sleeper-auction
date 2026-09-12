@@ -133,10 +133,22 @@ def actuals(week, season=SEASON):
     for row in d:
         pid = str(row.get("player_id") or "")
         st = row.get("stats") or {}
-        if pid and st.get("pts_half_ppr") is not None:
-            out[pid] = {"actual": float(st["pts_half_ppr"]),
-                        "snaps_pct": st.get("off_snp"),
-                        "gp": st.get("gp")}
+        if not pid or not st:
+            continue
+        # Sleeper omits pts_half_ppr entirely for a player who scored nothing,
+        # so its absence means zero, not absent. Snaps, targets and games
+        # played are what actually distinguish "played and scored nothing"
+        # from "was not active".
+        played = bool(st.get("gp") or st.get("off_snp") or st.get("gms_active"))
+        pts = st.get("pts_half_ppr")
+        if pts is None and not played:
+            continue
+        out[pid] = {"actual": float(pts) if pts is not None else 0.0,
+                    "played": played,
+                    "snaps": st.get("off_snp"),
+                    "targets": st.get("rec_tgt"),
+                    "carries": st.get("rush_att"),
+                    "gp": st.get("gp")}
     return out
 
 
@@ -425,10 +437,50 @@ def build_slate(draft_id, roster_id, week):
     pool = db.value_pool(db.build_pool()[0])
     byid = {p["sleeper_id"]: p for p in pool if p.get("sleeper_id")}
     st = db.draft_state(draft_id)
-    mine = [pk for pk in st["picks"] if pk["roster_id"] == roster_id]
+    # Build from the CURRENT roster, not the draft. Anything added or dropped
+    # since draft night is otherwise invisible, which silently drops every
+    # waiver pickup off the page.
+    mine = []
+    league_id_early = (st["draft"] or {}).get("league_id")
+    roster_ids = []
+    if league_id_early:
+        try:
+            for r in db.gj("https://api.sleeper.app/v1/league/%s/rosters"
+                           % league_id_early, ttl=120):
+                if r.get("roster_id") == roster_id:
+                    roster_ids = [str(x) for x in (r.get("players") or [])]
+                    break
+        except Exception:
+            roster_ids = []
+    drafted = {pk["player_id"]: pk for pk in st["picks"]
+               if pk["roster_id"] == roster_id}
+    if roster_ids:
+        idx = None
+        for pid in roster_ids:
+            pk = drafted.get(pid)
+            if pk is None:
+                base = byid.get(pid) or {}
+                if not base:
+                    if idx is None:
+                        try:
+                            idx = db.gj("https://api.sleeper.app/v1/players/nfl",
+                                        key="slp-players", ttl=86400)
+                        except Exception:
+                            idx = {}
+                    raw = (idx or {}).get(pid) or {}
+                    base = {"name": raw.get("full_name") or pid,
+                            "pos": db.npos((raw.get("fantasy_positions")
+                                            or [raw.get("position")])[0]),
+                            "team": db.nteam(raw.get("team"))}
+                pk = {"player_id": pid, "roster_id": roster_id, "amount": None,
+                      "name": base.get("name"), "pos": base.get("pos"),
+                      "team": base.get("team"), "acquired": "added"}
+            mine.append(pk)
+    else:
+        mine = list(drafted.values())
     if not mine:
-        raise SystemExit("No players found for roster_id %s in draft %s"
-                         % (roster_id, draft_id))
+        raise SystemExit("No players found for roster_id %s in league %s"
+                         % (roster_id, league_id_early))
 
     lines = vegas(week)
     proj = week_projections(week)
@@ -453,7 +505,9 @@ def build_slate(draft_id, roster_id, week):
         players.append({
             "id": pid, "name": pk["name"] or base.get("name"),
             "pos": pk["pos"] or base.get("pos"), "team": team,
-            "paid": pk["amount"], "season_value": base.get("base"),
+            "paid": pk.get("amount"),
+            "acquired": pk.get("acquired", "drafted"),
+            "season_value": base.get("base"),
             "season_tier": base.get("tier"),
             "value_conf": base.get("value_conf"),
             "proj_source": base.get("proj_source"),
@@ -474,6 +528,9 @@ def build_slate(draft_id, roster_id, week):
             "game_state": gs.get(team),
             "locked": (gs.get(team) or {}).get("state") in ("in", "post"),
             "actual": (act.get(pid) or {}).get("actual"),
+            "played": (act.get(pid) or {}).get("played"),
+            "snaps_played": (act.get(pid) or {}).get("snaps"),
+            "targets": (act.get(pid) or {}).get("targets"),
         })
     players.sort(key=lambda p: -(p["proj"] or 0))
 
@@ -491,11 +548,12 @@ def build_slate(draft_id, roster_id, week):
     for pl in players:
         gsx = pl.get("game_state") or {}
         if gsx.get("state") == "post" and pl.get("actual") is None:
-            # Game is final and he has no stats line: he scored nothing, or was
-            # inactive. Either way his projection is spent, not pending.
+            # Final game, no stats row at all: he was not active.
             pl["actual"] = 0.0
             pl["dnp"] = True
             pl["vs_proj"] = round(-(pl.get("proj") or 0), 2)
+        elif gsx.get("state") == "post" and not pl.get("played"):
+            pl["dnp"] = True
     live_proj = round(sum((p["actual"] if p["locked"] and p["actual"] is not None
                            else (p["proj"] or 0)) for p in started), 1)
     my_total = round(sum(p["proj"] or 0 for p in players if p["starting"]), 1)
@@ -718,8 +776,13 @@ predicted it, and which misled. Be specific about what was knowable in advance \
 versus what was variance -- most single-week misses are variance, and saying so \
 is more honest than inventing a narrative.
 
-A player marked "dnp" had a final game and no stats line: he did not play or \
-did not score. Say which you can and cannot tell from the data.
+Distinguish a zero from an absence, because they mean opposite things. \
+"played": true with "actual": 0 means he was on the field and produced nothing \
+-- check "snaps_played" and "targets" to say whether he was involved and failed \
+or was simply ignored. "dnp": true means he was not active at all, so his \
+projection was never live and nothing about his ability was tested. \
+"acquired": "added" marks a waiver pickup rather than a drafted player; he has \
+no auction price, and his season value may be thin.
 
 Be decisive and brief. Two to four pros and cons each, one line apiece. Name the \
 single deciding factor. Where the data is thin or a projection is missing, say \
@@ -1060,6 +1123,12 @@ def report(slate, pos, ai=None):
             note.append("wind %smph" % wx["wind_mph"])
         if v.get("cv") and v["cv"] >= 0.65:
             note.append("volatile cv=%.2f" % v["cv"])
+        if p.get("played") and p.get("snaps_played"):
+            note.append("%d snaps%s" % (p["snaps_played"],
+                                        ", %d tgt" % p["targets"]
+                                        if p.get("targets") else ""))
+        if p.get("acquired") == "added":
+            note.append("waiver add")
         if sn.get("team_changed"):
             note.append("snaps were on %s" % sn.get("earned_on"))
         elif sn.get("trend") and abs(sn["trend"]) >= 8:
@@ -1069,7 +1138,9 @@ def report(slate, pos, ai=None):
             note.append("depth %s%s" % (dp["order"],
                                         "/" + dp["slot"] if dp.get("slot") else ""))
         act = "-"
-        if p.get("actual") is not None:
+        if p.get("dnp"):
+            act = "DNP"
+        elif p.get("actual") is not None:
             act = "%.1f%s" % (p["actual"],
                               (" %+.0f" % p["vs_proj"]) if p.get("vs_proj") else "")
         elif p.get("locked"):
@@ -1084,10 +1155,10 @@ def report(slate, pos, ai=None):
             ("#%s %s" % (dv["rank"], dv["ppg"]) if dv.get("rank") else "-"),
             ", ".join(note)))
     o.append("")
-    o.append("* = in your Sleeper starting lineup | DvP = opponent rank (1=toughest)"
-             " and pts/gm allowed to this position, from %s | SNAP%% = last 3 games, %s"
-             % (slate.get("dvp_source", {}).get("season") or "n/a",
-                slate.get("snap_source", {}).get("season") or "n/a"))
+    o.append("* = in your Sleeper starting lineup | ACTUAL shows points scored with"
+             " the gap vs projection; DNP = not active | DvP = opponent rank"
+             " (1=toughest) and pts/gm allowed to this position, from %s"
+             % (slate.get("dvp_source", {}).get("season") or "n/a"))
     if ai and not ai.get("error"):
         o.append("")
         o.append("=" * 92)
@@ -1189,6 +1260,12 @@ def html_report(slate, pos, ai=None, job_id=None):
             notes.append("wind %smph" % wx["wind_mph"])
         if v.get("cv") and v["cv"] >= 0.65:
             notes.append('<span class="vol">volatile %.2f</span>' % v["cv"])
+        if p.get("played") and p.get("snaps_played"):
+            notes.append("%d snaps%s" % (p["snaps_played"],
+                                         ", %d tgt" % p["targets"]
+                                         if p.get("targets") else ""))
+        if p.get("acquired") == "added":
+            notes.append('<b class="vol">waiver add</b>')
         if sn.get("team_changed"):
             notes.append('<b class="vol">snaps were on %s</b>' % sn.get("earned_on"))
         elif sn.get("trend") and abs(sn["trend"]) >= 8:
@@ -1210,7 +1287,8 @@ def html_report(slate, pos, ai=None, job_id=None):
                 p["proj"] if p["proj"] is not None else "&mdash;",
                 ("pl" if (p.get("vs_proj") or 0) > 0 else
                  "mn" if p.get("actual") is not None else "mut"),
-                (("%.1f %+.0f" % (p["actual"], p.get("vs_proj") or 0))
+                ("DNP" if p.get("dnp") else
+                 ("%.1f %+.0f" % (p["actual"], p.get("vs_proj") or 0))
                  if p.get("actual") is not None
                  else ("live" if p.get("locked") else "&mdash;")),
                 p["implied_total"] if p["implied_total"] is not None else "&mdash;",
