@@ -323,6 +323,7 @@ def build_board(draft_id, roster_id, week, limit=25):
         c.update(faab_bid(c, budget_left, state["league"]))
 
     return {"week": week, "league_id": league_id, "roster_id": roster_id,
+            "draft_id": draft_id,
             "team_name": next((t["owner"] for t in state["teams"]
                                if t["roster_id"] == roster_id), "me"),
             "league": state["league"], "flex_bar": round(flex_bar, 2),
@@ -533,7 +534,15 @@ def html_report(b, ai=None, job_id=None):
 
     if job_id and not cards:
         cards = sitstart.PENDING_PANEL + (sitstart.POLL_JS % json.dumps(job_id))
-    return WV_TPL.replace("__ROWS__", rows).replace("__NEEDS__", needs) \
+    opts = "".join('<option value="%d"%s>%d</option>'
+                   % (w, " selected" if w == b["week"] else "", w)
+                   for w in range(1, 19))
+    hidden = "".join('<input type="hidden" name="%s" value="%s">' % (k, v)
+                     for k, v in (("draft", b.get("draft_id") or ""),
+                                  ("me", b.get("roster_id") or ""))
+                     if v)
+    return WV_TPL.replace("__OPTS__", opts).replace("__HIDDEN__", hidden) \
+        .replace("__ROWS__", rows).replace("__NEEDS__", needs) \
         .replace("__NEWS__", news).replace("__AI__", cards) \
         .replace("__TEAM__", str(b["team_name"])).replace("__WK__", str(b["week"])) \
         .replace("__N__", str(b["free_agent_count"])) \
@@ -549,7 +558,7 @@ body{margin:0;background:#0d1117;color:#e6edf3;font:14px/1.5 -apple-system,Blink
 .nav{display:flex;gap:2px;align-items:center;padding:0 14px;background:#0b0f14;border-bottom:1px solid #30363d}
 .nav a{padding:11px 15px;color:#8b949e;text-decoration:none;font-size:13px;font-weight:600;border-bottom:2px solid transparent}
 .nav a:hover{color:#e6edf3}.nav a.on{color:#fff;border-bottom-color:#1f6feb}
-.wksel{color:#8b949e;font-size:12px;padding-right:6px}.wksel select{background:#161b22;color:#e6edf3;border:1px solid #30363d;border-radius:5px;padding:3px 6px;font:inherit;margin-left:4px}
+.wksel{color:#8b949e;font-size:12px;padding-right:10px;display:flex;align-items:center;gap:2px;margin:0}.wksel select{background:#161b22;color:#e6edf3;border:1px solid #30363d;border-radius:5px;padding:3px 6px;font:inherit;margin-left:4px}
 .hd{padding:16px 20px;background:#161b22;border-bottom:1px solid #30363d}
 .hd h1{margin:0;font-size:20px}
 .wrap{padding:16px 20px;display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}
@@ -582,13 +591,7 @@ tr:hover td{background:#1c2128}
 @keyframes sp{to{transform:rotate(360deg)}}
 @media(max-width:900px){.rail{flex:1 1 100%}}
 </style></head><body>
-<div class="nav"><a href="#" data-p="/sitstart">Sit / Start</a><a href="#" data-p="/waivers">Waivers</a><a href="#" data-p="/lookahead">Look Ahead</a><a href="#" data-p="/board">Draft board</a><a href="#" data-p="/analysis">Analysis</a><span class="navsp"></span><span class="wksel">week <select id="wk" onchange="var u=new URL(location.href);u.searchParams.set('week',this.value);u.searchParams.delete('refresh');location.href=u"></select></span></div>
-<script>(function(){
-var sel=document.getElementById('wk'); if(!sel) return;
-var cur=parseInt(new URLSearchParams(location.search).get('week')||'__WK__',10);
-for(var i=1;i<=18;i++){var o=document.createElement('option');
- o.value=i;o.textContent=i;if(i===cur)o.selected=true;sel.appendChild(o);}
-})();</script>
+<div class="nav"><a href="#" data-p="/sitstart">Sit / Start</a><a href="#" data-p="/waivers">Waivers</a><a href="#" data-p="/lookahead">Look Ahead</a><a href="#" data-p="/board">Draft board</a><a href="#" data-p="/analysis">Analysis</a><span class="navsp"></span><form class="wksel" method="get" action="">__HIDDEN__week&nbsp;<select name="week" onchange="this.form.submit()">__OPTS__</select><noscript><button type="submit">go</button></noscript></form></div>
 <script>(function(){var qs=location.search||'';
 var here=location.pathname==='/'?'/sitstart':location.pathname;
 document.querySelectorAll('.nav a').forEach(function(a){a.href=a.dataset.p+qs;
