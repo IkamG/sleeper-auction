@@ -97,10 +97,16 @@ rather than guessing.
 
 ### Waivers — `/waivers?week=N`
 
-Ranks every unrostered player on two forces that pull against each other:
+Ranks every unrostered player on three forces that pull against each other:
 
 - **Need** — weekly points above the player he would actually replace *in your
-  lineup*. A fact about your roster, not about him.
+  lineup*. A fact about your roster, not about him. It is **negative for
+  almost every add worth making in September**: a good claim usually does not
+  crack your lineup the week you make it.
+- **Upside** — role evidence a weekly projection cannot see. Per-touch
+  production against usage within the position (YPC for backs, YPT for
+  receivers), whether a backfield has an owner, whether a rookie is already
+  top-2 on the depth chart, snap share. This is the half that wins leagues.
 - **Quality** — his season-long auction value in the abstract. A genuinely
   valuable player is worth rostering even without a need.
 
@@ -112,6 +118,19 @@ because the backup never plays, and low at RB/WR where a spare slots into the
 flex. A player below his hurdle is still shown, but discounted and capped at
 token FAAB.
 
+**Kickers and defences are streamed, not added**, so they rank in their own
+strip and never compete for a place on the board. The best available defence
+is worth about a point a week over the one you already have, that edge does not
+persist because you stream again next week, and no kicker has ever been the
+pickup that changed a season. Quarterbacks join them unless one clears the
+hurdle over your starter. Ranking these alongside skill players on this week's
+projection alone is how a waiver board ends up with no running backs on it —
+the positions where claims are actually won produce negative need every time.
+Tight ends are capped at four seats for the same reason.
+
+A gap is weighted by the volume behind it. Ten yards per target on 26 targets
+is arithmetic on a tiny denominator, not a breakout, and it is scored as such.
+
 **FAAB pricing is anchored on measured demand.** Sleeper publishes how many
 leagues added each player in the last 24 hours, across millions of leagues —
 crowd-sourced waiver demand measured rather than opined. High demand on a
@@ -119,7 +138,12 @@ player who does not help your roster is a reason to let him go, not to chase
 him: demand sets his *price*, not his value to you.
 
 The league's FAAB budget is read from Sleeper, so bids come back in real
-dollars as well as percentages.
+dollars as well as percentages. Bids price **need plus upside**, not need
+alone — pricing off this week's lineup help put every September add at zero,
+which is how you lose the back you needed in October because you would not bid
+on him in week 2. A player nobody else is adding is capped near the minimum:
+FAAB is a sealed auction against the room, so there is no sense paying for
+competition that does not exist.
 
 Recent r/fantasyfootball posts are pulled from the Atom feed for injury and
 role leads. They are passed to the model as explicitly unverified chatter —

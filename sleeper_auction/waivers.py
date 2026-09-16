@@ -40,6 +40,20 @@ from sleeper_auction import sitstart             # noqa: E402
 POS_HURDLE = {"QB": 5.0, "TE": 3.0, "K": 3.0, "DEF": 3.0, "RB": 1.0, "WR": 1.0}
 FLEX_POS = ("RB", "WR", "TE")
 
+# Kickers and defences are streamed, not added. The best available defence is
+# worth about a point a week over the one you already have, that edge does not
+# persist -- you stream again next week -- and there is no version of the wire
+# where a kicker is the pickup that changed your season. They rank on this
+# week's projection alone, in their own strip, and never compete for a place
+# on the board with a back who might take over a backfield in October.
+STREAM_POS = ("K", "DEF")
+SKILL_POS = ("RB", "WR", "TE")
+
+# Most seats on the board belong to RB and WR. A tight end can be a real add,
+# but a board that is half tight ends is a board that has confused "positive
+# number" with "player worth a claim".
+BOARD_CAP = {"TE": 4, "QB": 2}
+
 # FAAB bands, as a share of the season budget. These are the shapes the
 # fantasy community converges on; demand and need move a player between bands.
 FAAB_BANDS = [
@@ -149,7 +163,7 @@ def _flex_bar(mine):
     return (pool[0].get("wk_proj") or 0) if pool else 0.0
 
 
-def score_candidate(fa, mine, flex_bar, league, trend):
+def score_candidate(fa, mine, flex_bar, league, trend, role=None):
     """Rate one free agent on need, quality, and what he would displace."""
     pos = fa["pos"]
     info = mine.get(pos) or {"worst_starter": None, "starters": [], "all": []}
@@ -180,7 +194,13 @@ def score_candidate(fa, mine, flex_bar, league, trend):
     # worse must not out-rank a real upgrade just because the whole internet
     # is adding him -- demand sets his PRICE, not his value to this roster.
     if need_delta <= 0:
-        core = need_delta                      # full penalty, no discount
+        # Not this week's starter is not the same as worthless. At the skill
+        # positions the penalty is compressed, because "he would not crack my
+        # lineup on Sunday" is true of essentially every add that wins a
+        # league in September -- the payoff is a role in October. At a
+        # single-slot position it is not compressed: a backup kicker really
+        # is worth nothing.
+        core = need_delta * (0.45 if pos in SKILL_POS else 1.0)
     elif clears:
         core = need_delta
     else:
@@ -194,11 +214,67 @@ def score_candidate(fa, mine, flex_bar, league, trend):
     # registers for one who does not.
     demand_term = demand * (2.0 if need_delta > 0 else 0.5)
 
-    score = core + quality_term + demand_term
+    # Upside: what the job could become. This is the half of a waiver claim
+    # that actually wins leagues, and weekly projection cannot see it -- a
+    # back who takes over a backfield in October projects four points today.
+    # Every term is role evidence (snap share, depth chart, per-touch rate on
+    # light usage), never demand: the crowd still only sets the price.
+    r = role or {}
+    e = r.get("eff") or {}
+    tags = r.get("tags") or ()
+    upside, drivers = 0.0, []
+    if pos in SKILL_POS:
+        # How much work the per-touch rate actually describes. A back is
+        # judged on touches and a receiver on targets, and both are scored
+        # against what a real role looks like at the position.
+        vol_raw = (e.get("tgt_pg") if pos in ("WR", "TE")
+                   else e.get("touches_pg")) or 0.0
+        vol = min(1.0, vol_raw / (4.0 if pos in ("WR", "TE") else 7.0))
+
+        gap = (r.get("gap") or {}).get("gap")
+        if gap and gap >= 0.25:
+            # A gap computed on two targets a game is arithmetic, not
+            # evidence -- 10 YPT on 26 targets says nothing about what the
+            # player does with a job. Weight the rate by the volume behind it.
+            upside += min(gap, 0.9) * 5.0 * vol
+            drivers.append("%s %.2f on %.1f/gm (gap %+.2f)"
+                           % ((r["gap"].get("eff_metric") or "eff").upper(),
+                              r["gap"].get("eff_value") or 0, vol_raw, gap))
+        if "open-committee" in tags:
+            upside += 3.0
+            drivers.append("backfield unsettled -- no injury needed")
+        if "handcuff" in tags:
+            upside += 1.5
+            drivers.append("direct backup to a workhorse")
+        if "rookie-in-line" in tags:
+            upside += 2.0
+            drivers.append("rookie already top-2 on the depth chart")
+        use_pct = (r.get("gap") or {}).get("use_pct")
+        if ("red-zone role" in tags and vol_raw >= 3.0
+                and (use_pct is None or use_pct < 0.55)):
+            # Nearly every backup tight end clears four red-zone targets over
+            # a season, and "touches" counts a receiver's catches rather than
+            # his targets, so a starter on 90% of snaps reads as light usage.
+            # Require a real workload behind the rate and genuinely low usage
+            # for the position, or the tag describes half the league.
+            upside += 1.0
+            drivers.append("red-zone work on a light role")
+        snap = e.get("snap_share")
+        if snap and snap >= 0.55:
+            # Being on the field is table stakes, not a thesis -- it separates
+            # a player from a name, and nothing more.
+            upside += 1.0
+            drivers.append("on %d%% of snaps" % round(snap * 100))
+
+    score = core + quality_term + demand_term + upside
     return {"need_delta": need_delta, "bar": round(bar, 2), "clears_hurdle": clears,
             "hurdle": hurdle, "quality": quality, "demand": demand,
             "trend_rank": tr.get("rank"), "trend_count": tr.get("count"),
-            "replaces": (worst or {}).get("name"), "score": round(score, 2)}
+            "replaces": (worst or {}).get("name"), "score": round(score, 2),
+            "upside": round(upside, 2), "upside_why": drivers, "tags": list(tags),
+            "snap_share": (r.get("eff") or {}).get("snap_share"),
+            "opp_gap": (r.get("gap") or {}).get("gap"),
+            "stream_only": pos in STREAM_POS or (pos == "QB" and not clears)}
 
 
 def faab_bid(cand, budget_left, league):
@@ -211,29 +287,45 @@ def faab_bid(cand, budget_left, league):
     need = cand["need_delta"]
     demand = cand["demand"]
     q = cand["quality"]
+    upside = cand.get("upside") or 0.0
 
-    # Need is the dominant term: a player who does not improve the lineup is
-    # not worth real money regardless of how many people are chasing him.
+    # What the claim is worth: the lineup help he gives now, plus what the
+    # role could become. Pricing off need alone put every September add at
+    # zero -- which is how you lose the back you needed in October because
+    # you would not bid on him in week 2.
+    edge = max(need, 0.0) + upside
+
     pct = 0.0
-    if need >= 6:
-        pct = 30.0
-    elif need >= 4:
-        pct = 18.0
-    elif need >= 2:
-        pct = 9.0
-    elif need >= 0.5:
-        pct = 3.5
+    if edge >= 8:
+        pct = 26.0
+    elif edge >= 6:
+        pct = 15.0
+    elif edge >= 4:
+        pct = 7.0
+    elif edge >= 2.5:
+        pct = 4.0
+    elif edge >= 1:
+        pct = 2.0
     else:
         pct = 1.0
     pct *= 1.0 + 0.8 * demand              # crowd demand raises the clearing price
     if q >= 25:
         pct *= 1.25                        # genuine season-long asset
-    if not cand["clears_hurdle"]:
-        # A player who does not clear his position's hurdle buys a bench spot,
-        # not a lineup upgrade. Cap him at token money however good the raw
-        # projection looks -- the model flagged the previous 0.5x discount as
-        # still far too rich, and it was right.
-        pct = min(pct * 0.25, 2.0)
+    if demand <= 0.02 and not cand.get("clears_hurdle"):
+        # Nobody else is bidding. FAAB is a sealed auction against the room,
+        # not a valuation exercise, so a strong case on a player with no
+        # measured demand is won at the minimum -- paying more buys nothing
+        # but a smaller budget for the week somebody good does come free.
+        pct = min(pct, 3.0)
+    if cand.get("stream_only"):
+        # A one-week rental at a position you will stream again next week.
+        # Token money, whatever the projection says.
+        pct = min(pct, 1.5)
+    elif need <= 0 and not cand["clears_hurdle"] and upside < 2.0:
+        # No lineup help this week and no role case behind it. That is a bench
+        # body, not a claim -- the model flagged the old 0.5x discount here as
+        # far too rich and it was right.
+        pct = min(pct * 0.35, 2.0)
     pct = max(0.0, min(55.0, pct))
 
     band = next((lbl for lo, hi, lbl in FAAB_BANDS if lo <= pct <= hi), "streamer")
@@ -265,6 +357,27 @@ def build_board(draft_id, roster_id, week, limit=25):
     inj = sitstart.injuries()
     lines = sitstart.vegas(week)
 
+    # Role evidence, shared with the look-ahead page: per-touch efficiency
+    # against usage, and whether a backfield has an owner. This is what lets
+    # the board rank a back who is about to matter above a defence that is
+    # worth a point on Sunday.
+    from sleeper_auction import lookahead
+    try:
+        index = lookahead.player_index()
+        eff = lookahead.efficiency()
+        gaps = lookahead.opportunity_gaps(eff, index)
+        backfields = lookahead.backfield_map(index, eff)
+        roles = {}
+        for pid, info in index.items():
+            e = eff["players"].get(pid)
+            g = gaps.get(pid)
+            tags, _why = lookahead.classify(pid, info, e, g, backfields, depth)
+            if tags or g or e:
+                roles[pid] = {"tags": tags, "gap": g, "eff": e}
+    except Exception as exc:          # role data is an enrichment, not a gate
+        roles = {}
+        sys.stderr.write("waivers: role data unavailable (%s)\n" % exc)
+
     def enrich(pid, p):
         team = p.get("team")
         ln = lines.get(team) or {}
@@ -290,9 +403,34 @@ def build_board(draft_id, roster_id, week, limit=25):
         c = enrich(pid, p)
         if not c["wk_proj"] and pid not in tr:
             continue
-        c.update(score_candidate(c, mine, flex_bar, state["league"], tr))
+        c.update(score_candidate(c, mine, flex_bar, state["league"], tr,
+                                 roles.get(pid)))
         cands.append(c)
     cands.sort(key=lambda x: -x["score"])
+
+    # The board and the streamers are different questions, so they are
+    # different lists. Mixing them is what buried every running back under a
+    # wall of defences worth a point each.
+    streamers = []
+    for pos in STREAM_POS + ("QB",):
+        pool_pos = [c for c in cands if c["pos"] == pos and c["stream_only"]]
+        pool_pos.sort(key=lambda x: -(x.get("wk_proj") or 0))
+        streamers.extend(pool_pos[:3])
+    cands = [c for c in cands if not c["stream_only"]]
+
+    # Running backs and receivers are where waiver claims are won: they carry
+    # the flex, they absorb injuries, and their roles actually change during a
+    # season. One-slot positions cannot do any of that, so they are capped
+    # rather than allowed to fill a board on arithmetic.
+    seen = {}
+    kept = []
+    for c in cands:
+        n = seen.get(c["pos"], 0)
+        if n >= BOARD_CAP.get(c["pos"], 99):
+            continue
+        seen[c["pos"]] = n + 1
+        kept.append(c)
+    cands = kept
 
     # Roster weaknesses, stated in the same units as the candidates.
     needs = []
@@ -319,7 +457,7 @@ def build_board(draft_id, roster_id, week, limit=25):
             budget_left = int(wb)
     except Exception:
         pass
-    for c in cands[:limit]:
+    for c in cands[:limit] + streamers:
         c.update(faab_bid(c, budget_left, state["league"]))
 
     return {"week": week, "league_id": league_id, "roster_id": roster_id,
@@ -329,7 +467,7 @@ def build_board(draft_id, roster_id, week, limit=25):
             "league": state["league"], "flex_bar": round(flex_bar, 2),
             "faab_budget": budget_left,
             "my_roster": my_players, "needs": needs,
-            "candidates": cands[:limit],
+            "candidates": cands[:limit], "streamers": streamers,
             "dropped": [{"id": k, **v} for k, v in list(dropped.items())[:10]],
             "free_agent_count": len(cands),
             "news": reddit_posts()}
@@ -374,14 +512,37 @@ Every number is computed for you. Do not invent statistics, and do not use \
 player knowledge beyond the payload -- if something is not there, say it is \
 unknown.
 
-Two forces decide a pickup and they pull against each other:
+Three forces decide a pickup and they pull against each other:
 
 - NEED is "need_delta": weekly projected points above the player he would \
 actually replace in this lineup ("replaces", "bar"). This is a fact about the \
-roster, not about the player.
+roster, not about the player. It is NEGATIVE for almost every add worth making \
+in September, and that is expected -- a good waiver claim usually does not \
+crack the lineup the week you make it.
+- UPSIDE is "upside" and "upside_why": role evidence that a weekly projection \
+cannot see. "opp_gap" is per-touch production percentile minus usage \
+percentile within the position -- positive means he produces on the touches he \
+gets and does not get many, which is a coaching decision that can reverse. \
+"tags" names the situation: open-committee needs no injury at all, handcuff \
+pays only if the starter misses time, rookie-in-line is already top-2 on the \
+depth chart. "snap_share" says whether he is on the field. THIS is the half \
+that wins leagues; need only describes this Sunday.
 - QUALITY is "season_value": his auction value in the abstract. A genuinely \
 valuable player is worth rostering even without a need, because rosters churn \
 and good players win leagues.
+
+Rate a gap against the volume behind it. A back producing on eight touches a \
+game is evidence; the same rate on two touches is arithmetic on a tiny \
+denominator, and you should say so rather than sell it as a breakout.
+
+The candidate board is running backs, receivers and tight ends only. Kickers \
+and defences are in "streamers", deliberately separated: the best available \
+defence is worth about a point a week over the one already rostered, that edge \
+does not persist because you stream again next week, and no kicker has ever \
+been the pickup that changed a season. Never present a streamer as a priority \
+claim, and never rank one above a back or receiver whose role is moving. \
+Quarterbacks appear in "streamers" too unless one clears the hurdle over the \
+current starter -- bye-week and injury cover, not a claim worth budget.
 
 Recommend on both, with one restraint: "hurdle" is the weekly edge a position \
 needs before an upgrade is worth a roster spot, and "clears_hurdle" says \
@@ -415,6 +576,9 @@ def ai_analyze(board, api_key=None, refresh=False):
                       for p in board["my_roster"]],
         "candidates": [{k: v for k, v in c.items() if k != "sleeper_id"}
                        for c in board["candidates"]],
+        "streamers": [{k: c.get(k) for k in
+                       ("name", "pos", "wk_proj", "need_delta", "replaces")}
+                      for c in board.get("streamers", [])],
         "news": [n["title"] for n in board["news"][:25]],
     }, default=str)
     key = "waivers-%s-w%s" % (board.get("roster_id"), board.get("week"))
@@ -438,19 +602,29 @@ def report(b, ai=None):
                  % (n["pos"], n["slots"], n["rostered"], st,
                     "  <-- UNFILLED" if n["unfilled"] else ""))
     o.append("")
-    o.append("%-24s %-4s %-7s %-7s %-8s %-9s %-7s %s"
-             % ("PLAYER", "POS", "WK", "NEED", "VALUE", "ADDS/24h", "FAAB", "REPLACES"))
-    o.append("-" * 100)
+    o.append("%-22s %-4s %-6s %-7s %-6s %-8s %-7s %s"
+             % ("PLAYER", "POS", "WK", "NEED", "UPSIDE", "ADDS/24h", "FAAB", "WHY"))
+    o.append("-" * 118)
     for c in b["candidates"]:
-        o.append("%-24s %-4s %-7s %-7s %-8s %-9s %-7s %s" % (
-            c["name"][:24], c["pos"],
+        o.append("%-22s %-4s %-6s %-7s %-6s %-8s %-7s %s" % (
+            c["name"][:22], c["pos"],
             ("%.1f" % c["wk_proj"]) if c.get("wk_proj") else "-",
             "%+.1f" % c["need_delta"],
-            ("$%.0f" % c["quality"]) if c.get("quality") else "-",
+            ("%+.1f" % c["upside"]) if c.get("upside") else "-",
             "{:,}".format(c["trend_count"]) if c.get("trend_count") else "-",
             ("%.0f%%%s" % (c.get("faab_pct", 0),
                            ("/$%d" % c["faab_dollars"]) if c.get("faab_dollars") else "")),
-            (c.get("replaces") or "-")))
+            "; ".join(c.get("upside_why") or []) or (c.get("replaces") or "-")))
+
+    if b.get("streamers"):
+        o.append("")
+        o.append("STREAMERS -- worth about a point a week, and only this week.")
+        o.append("Never claim one ahead of a back or receiver whose role is moving.")
+        for c in b["streamers"]:
+            o.append("  %-22s %-4s %-6s %-7s %s" % (
+                c["name"][:22], c["pos"],
+                ("%.1f" % c["wk_proj"]) if c.get("wk_proj") else "-",
+                "%+.1f" % c["need_delta"], c.get("replaces") or "-"))
     if ai and not ai.get("error"):
         o.append("")
         o.append("=" * 100)
@@ -508,18 +682,27 @@ def html_report(b, ai=None, job_id=None):
 
     rows = "".join(
         '<tr><td class="nm">%s</td><td><span class="pos %s">%s</span></td>'
-        '<td class="big">%s</td><td class="%s">%+.1f</td><td class="mut">%s</td>'
+        '<td class="big">%s</td><td class="%s">%+.1f</td><td class="%s">%s</td>'
         '<td class="mut">%s</td><td class="faab">%s%%%s</td><td class="mut">%s</td></tr>'
         % (c["name"], c["pos"], c["pos"],
            ("%.1f" % c["wk_proj"]) if c.get("wk_proj") else "&mdash;",
            "pl" if c["need_delta"] > 0 else "mn", c["need_delta"],
-           ("$%.0f" % c["quality"]) if c.get("quality") else "&mdash;",
+           "pl" if c.get("upside") else "mut",
+           ("+%.1f" % c["upside"]) if c.get("upside") else "&mdash;",
            "{:,}".format(c["trend_count"]) if c.get("trend_count") else "&mdash;",
            round(c.get("faab_pct", 0)),
            (" <span class='mut'>$%d</span>" % c["faab_dollars"])
            if c.get("faab_dollars") else "",
-           c.get("replaces") or "&mdash;")
+           " &middot; ".join(c.get("upside_why") or [])
+           or ("replaces " + c["replaces"] if c.get("replaces") else "&mdash;"))
         for c in b["candidates"])
+    streamers = "".join(
+        '<div class="row"><span><span class="pos %s">%s</span> %s</span>'
+        '<span class="mut">%s &middot; %+.1f</span></div>'
+        % (c["pos"], c["pos"], c["name"],
+           ("%.1f" % c["wk_proj"]) if c.get("wk_proj") else "&mdash;",
+           c["need_delta"])
+        for c in b.get("streamers", []))
     needs = "".join(
         '<div class="row"><span><span class="pos %s">%s</span> %s</span>'
         '<span class="mut">%s</span></div>'
@@ -543,6 +726,7 @@ def html_report(b, ai=None, job_id=None):
                      if v)
     return WV_TPL.replace("__OPTS__", opts).replace("__HIDDEN__", hidden) \
         .replace("__ROWS__", rows).replace("__NEEDS__", needs) \
+        .replace("__STREAM__", streamers) \
         .replace("__NEWS__", news).replace("__AI__", cards) \
         .replace("__TEAM__", str(b["team_name"])).replace("__WK__", str(b["week"])) \
         .replace("__N__", str(b["free_agent_count"])) \
@@ -600,13 +784,22 @@ document.querySelectorAll('.nav a').forEach(function(a){a.href=a.dataset.p+qs;
 <div class="mut">__N__ free agents &middot; flex bar __BAR__ pts &middot; FAAB budget __BUD__</div></div>
 <div class="wrap">
  <div class="main"><div class="panel" style="padding:0"><table>
-  <thead><tr><th>Player</th><th>Pos</th><th>Wk proj</th><th>Need</th><th>Value</th>
-  <th>Adds/24h</th><th>FAAB</th><th>Replaces</th></tr></thead><tbody>__ROWS__</tbody></table></div>
+  <thead><tr><th>Player</th><th>Pos</th><th>Wk proj</th><th>Need</th><th>Upside</th>
+  <th>Adds/24h</th><th>FAAB</th><th>Why he is here</th></tr></thead><tbody>__ROWS__</tbody></table></div>
   <div class="mut" style="font-size:12px"><b>Need</b> is weekly points above the player he would
-  actually replace in your lineup &middot; <b>Adds/24h</b> is how many Sleeper leagues added him,
-  which sets his price, not his value to you &middot; <b>FAAB</b> is a suggested opening bid</div>
+  actually replace in your lineup, so it is negative for almost every add worth making in
+  September &middot; <b>Upside</b> is role evidence &mdash; per-touch production on light usage,
+  an unsettled backfield, a rookie already in line &mdash; which is what need cannot see
+  &middot; <b>Adds/24h</b> is how many Sleeper leagues added him, which sets his price, not his
+  value to you &middot; <b>FAAB</b> is a suggested opening bid.
+  Kickers and defences are streamed separately: they are worth about a point a week and that
+  edge does not carry into next week.</div>
  </div>
- <div class="rail" id="ai-slot">__AI__
+ <div class="rail"><div id="ai-slot">__AI__</div>
+  <div class="panel"><h3>Streamers &mdash; K / DEF / QB</h3>__STREAM__
+   <div class="mut" style="font-size:11px;margin-top:7px">Worth roughly a point a week,
+   and only this week. Kept off the board so they cannot outrank a back whose role is
+   about to change.</div></div>
   <div class="panel"><h3>Roster needs</h3>__NEEDS__</div>
   <div class="panel"><h3>r/fantasyfootball</h3>__NEWS__</div>
  </div>

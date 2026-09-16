@@ -1401,7 +1401,7 @@ document.querySelectorAll('.nav a').forEach(function(a){a.href=a.dataset.p+qs;
   allowed to this position, computed from completed games &middot;
   <b>Snap%</b> is last-3-game snap share; green/red flags a shift of 8+ points</div>
  </div>
- <div class="rail" id="ai-slot">__AI__</div>
+ <div class="rail"><div id="ai-slot">__AI__</div></div>
 </div></body></html>"""
 
 

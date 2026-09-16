@@ -194,6 +194,27 @@ def classify(pid, info, e, gap, backfields, depth):
     return tags, why
 
 
+def player_index(positions=("QB", "RB", "WR", "TE")):
+    """Roster-relevant Sleeper players, keyed by id.
+
+    Shared with the waiver board, which needs the same role fields -- depth
+    chart order and experience -- to tell an add that matters from a body.
+    """
+    raw = db.gj("https://api.sleeper.app/v1/players/nfl", key="slp-players",
+                ttl=86400)
+    index = {}
+    for pid, p in raw.items():
+        pos = db.npos((p.get("fantasy_positions") or [p.get("position")])[0])
+        if pos in positions and p.get("team"):
+            index[str(pid)] = {"name": p.get("full_name") or pid, "pos": pos,
+                               "team": db.nteam(p.get("team")),
+                               "years_exp": p.get("years_exp"),
+                               "age": p.get("age"),
+                               "depth_chart_order": p.get("depth_chart_order"),
+                               "injury_status": p.get("injury_status")}
+    return index
+
+
 def stash_board(draft_id, roster_id, limit=20):
     """Rank unrostered players on long-term payoff rather than this week."""
     pool = db.value_pool(db.build_pool()[0])
@@ -202,18 +223,7 @@ def stash_board(draft_id, roster_id, limit=20):
     league_id = (state["draft"] or {}).get("league_id")
     taken, by_roster = waivers.rostered_ids(league_id)
 
-    raw = db.gj("https://api.sleeper.app/v1/players/nfl", key="slp-players",
-                ttl=86400)
-    index = {}
-    for pid, p in raw.items():
-        pos = db.npos((p.get("fantasy_positions") or [p.get("position")])[0])
-        if pos in ("QB", "RB", "WR", "TE") and p.get("team"):
-            index[str(pid)] = {"name": p.get("full_name") or pid, "pos": pos,
-                               "team": db.nteam(p.get("team")),
-                               "years_exp": p.get("years_exp"),
-                               "age": p.get("age"),
-                               "depth_chart_order": p.get("depth_chart_order"),
-                               "injury_status": p.get("injury_status")}
+    index = player_index()
 
     team_bye = {}
     for pl in pool:
@@ -617,7 +627,7 @@ opportunity gap: how well a player performs per touch versus how often he is use
   is a coaching decision that can reverse &middot; <b>handcuff</b> pays only on an injury
   ahead of him &middot; <b>open-committee</b> needs no injury at all</div>
  </div>
- <div class="rail">__AI__
+ <div class="rail"><div id="ai-slot">__AI__</div>
   <div class="panel"><h3>Thin positions</h3>__THIN__</div>
   <div class="panel"><h3>Bye clusters</h3>__BYES__</div>
  </div>
