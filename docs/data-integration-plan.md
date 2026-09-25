@@ -7,6 +7,25 @@ in the existing code.
 
 ---
 
+## Decisions (from the user, 2026-09-25)
+
+- **Scope:** implement every free source in this plan. That includes all of section 2.7, with
+  PFR advanced stats and Next Gen Stats now in scope (Phase 1b), plus RotoWire RSS as a
+  second news feed.
+- **The Odds API: yes.** The user has a key. Read it **only** from the `ODDS_API_KEY`
+  environment variable. Never write it into the repo, a fixture, a log line or the cache
+  directory. It could not be tested from the research sandbox (the proxy blocks
+  `api.the-odds-api.com`), so the first step of Phase 2 is `--probe` with the key set. The
+  probe settles whether this plan includes player props.
+- **Blend weight: start at 0.55 props** (full coverage), as specified in Phase 3. Phase 5
+  calibration can still move it once there are 4 weeks of data.
+- **`/trades`: yes, as a separate feature** (section 10). It depends on Phase 4's value feeds
+  but ships on its own branch/PR, after the data phases.
+- **KeepTradeCut: yes, alongside FantasyCalc.** They are different datasets: FantasyCalc
+  values come from real completed trades, KTC's from crowdsourced keep/trade/cut votes. KTC
+  has no API and its terms prohibit scrapers, so its adapter is **opt-in**
+  (`KTC_ENABLED=1`) and off by default. See Phase 4.
+
 ## 0. Summary
 
 | Requested feature | Obtainable? | Best source | Cost | Verified | Lands in |
@@ -34,8 +53,9 @@ clients (ffanalytics as of 2026-09-09, `kalshi_python_sync` 3.30.0, oddsapiR, a 
 client) and public integrations. Those rows say **probe first**: run the module's
 `--probe` on an unrestricted network before building on it.
 
-**Recommended order:** Phase 0 foundation → Phase 1 nflverse → Phase 2 props → Phase 3
-consensus projections → Phase 4 news, ROS values and league FAAB → Phase 5 calibration. Each phase is
+**Recommended order:** Phase 0 foundation → Phase 1 nflverse → Phase 1b PFR/NGS → Phase 2
+props → Phase 3 consensus projections → Phase 4 news, ROS/trade values and league FAAB →
+Phase 5 calibration. After that, the separate `/trades` feature (section 10). Each phase is
 independently shippable and leaves the app working if its feeds are down.
 
 ---
@@ -88,8 +108,8 @@ All nflverse release assets download as
 | Expected fantasy points | `ffverse/ffopportunity` / `latest-data/ep_weekly_2026.csv` | `player_id` (GSIS) | Daily (2026-09-25) | `total_fantasy_points_exp`, `receptions_exp`, `rec_yards_gained_exp`, `*_touchdown_exp`, actuals, `_diff`, team totals |
 | xFP play-by-play | `ffverse/ffopportunity` / `latest-data/ep_pbp_rush_2026.csv`, `ep_pbp_pass_2026.csv` | `rusher_player_id` (pass file: probe) | Daily | `yardline_100`, `goal_to_go`, `xpass`, `down`, `score_differential`, `vegas_wp`, `implied_total`: enough for red-zone share and PROE |
 | Schedules and lines | `https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv` | `game_id`, teams | Several times a week. Week 3 and week 4 lines already present | `gameday`, `gametime` (ET), `spread_line` (**home** margin, positive = home favoured), `total_line`, moneylines, `roof`, `surface`, `away_rest`/`home_rest`, `stadium_id` |
-| PFR advanced (later) | `nflverse-data` / `pfr_advstats/advstats_week_{rec,rush,pass}_2026.csv` | `pfr_player_id` | 2026-09-24 | Drops, broken tackles, yards after contact |
-| Next Gen Stats (later) | `nflverse-data` / `nextgen_stats/ngs_{receiving,rushing,passing}.csv.gz` | GSIS | Weekly | Separation, cushion, rush yards over expected. Use the **combined** files: the per-season 2024+ files are ~600-byte stubs |
+| PFR advanced | `nflverse-data` / `pfr_advstats/advstats_week_{rec,rush,pass}_2026.csv` | `pfr_player_id` | 2026-09-24 | Drops, broken tackles, yards after contact |
+| Next Gen Stats | `nflverse-data` / `nextgen_stats/ngs_{receiving,rushing,passing}.csv.gz` | GSIS | Weekly | Separation, cushion, rush yards over expected. Use the **combined** files: the per-season 2024+ files are ~600-byte stubs |
 
 Traps found while probing:
 
@@ -211,7 +231,13 @@ That matches the fence this repo already documents in `sources/fantasypros.py`.
   already parses: `rank_ecr`, `rank_ave`, `rank_std`, `rank_min`, `rank_max`, `tier`,
   `player_id`, and cross IDs such as `sportsdata_id`, `player_yahoo_id` and `cbs_player_id`.
 - **FanDuel `REMAINING`** projections: numberFire's ROS points (same GraphQL call as 2.3).
-- KeepTradeCut: crowdsourced, redraft page exists, no API. Optional and low priority.
+- **KeepTradeCut** (`keeptradecut.com/fantasy-rankings`, the redraft page): values come from
+  crowdsourced keep/trade/cut votes, a different method from FantasyCalc's completed
+  trades, so the two disagree usefully. There is no API. Player data is embedded in the page
+  as a JS array (`playersArray` on the dynasty pages; **probe** the redraft page for the
+  variable name and value keys). **Its terms prohibit robots, spiders and scrapers**, so the
+  adapter is opt-in (`KTC_ENABLED=1`), fetches at most once every 24 h, and ships off by
+  default. The site was blocked from the research sandbox.
 
 ### 2.7 Other sources worth adding
 
@@ -224,7 +250,8 @@ That matches the fence this repo already documents in `sources/fantasypros.py`.
 | ffopportunity xFP | Buy-low / sell-high: production against the quality of opportunity. Separates a bad week from a bad role. | Small |
 | ffopportunity pbp | Red-zone and goal-line share, which drive TDs. Team PROE (pass rate over expected in neutral script). | Medium |
 | Open-Meteo at kickoff hour | Fixes "weather uses max wind across the forecast window" | Tiny |
-| PFR advanced, NGS | Separation, yards after contact, RYOE. Nice for the model's narrative, low marginal value. | Later |
+| PFR advanced, NGS | Separation, yards after contact, RYOE, drops. Context for the model's narrative, and a second read on efficiency for look-ahead. | Small (Phase 1b) |
+| RotoWire RSS | A bulk news feed alongside the per-player ESPN calls | Small (Phase 4) |
 
 ---
 
@@ -255,7 +282,7 @@ cadences, so it gets its own package:
           consensus.py     per-player aggregation
         blend.py           final weekly projection from consensus + props (+ calibration)
         news.py            ESPN per-player news, Sleeper news_updated
-        values.py          FantasyCalc, FantasyPros ROS, ROS projection, SOS
+        values.py          FantasyCalc, KeepTradeCut (opt-in), FantasyPros ROS, ROS projection, SOS
         league.py          FAAB remaining, transaction history, room clearing prices
         prefetch.py        background refresh thread for slow feeds
         calibrate.py       Phase 5: per-source error, blend weights
@@ -513,6 +540,30 @@ MIA `+10.5`).
 - `/sitstart?noai=1` renders the new column and flags.
 - With the network off and no cache, every existing number still renders.
 
+### Phase 1b: PFR advanced stats and Next Gen Stats
+
+**File:** `feeds/nflverse.py` (same module)
+
+    pfr_adv(season=None, recent=3) -> {"season", "players": {sid: {...}}}   # via pfr_id
+    ngs(season=None) -> {"season", "players": {sid: {...}}}                  # via gsis_id
+
+- PFR: `advstats_week_rec_{season}` for drops, drop %, broken tackles, yards after contact
+  per reception and ADOT; `advstats_week_rush_{season}` for yards before/after contact and
+  broken tackles per attempt. **Probe the column names** before mapping. Aggregate over the
+  season and the last 3 games from sums, not averages of rates.
+- NGS: the combined `ngs_receiving.csv.gz` / `ngs_rushing.csv.gz`, filtered to `season` and
+  `week > 0` (NGS files also carry season-total rows with `week == 0`; probe that). Receiving:
+  average separation, cushion, YAC over expected. Rushing: rush yards over expected per
+  attempt, and efficiency. Minimum volume: 10 targets / 20 carries.
+- **Integration:** an `efficiency_ctx` object on look-ahead candidates and `my_roster`, and on
+  sit/start players only when a value is extreme (top or bottom 10% at the position), so the
+  payload stays small. In `lookahead.classify()`, add a supporting line to `efficient-unused`
+  when RYOE or separation agree with the YPC/YPT gap. That is independent confirmation that
+  the efficiency is the player's rather than the scheme's. Add a `SYSTEM` paragraph:
+  "efficiency_ctx is descriptive context, not a projection. It explains *why* a rate is high
+  or low."
+- **Tests:** fixtures for both files; the season-total-row filter; the volume gate.
+
 ### Phase 2: Player props
 
 **Files:** `feeds/props/__init__.py`, `kalshi.py`, `oddsapi.py`, `implied.py`
@@ -547,7 +598,14 @@ Canonical market keys: `pass_yd`, `pass_td`, `pass_int`, `pass_att`, `pass_cmp`,
 6. Respect rate limits: small sequential requests with a 0.1 s sleep. There are about 10
    series; it is cheap.
 
-**`oddsapi.py`** (only when `ODDS_API_KEY` is set):
+**`oddsapi.py`** (enabled whenever `ODDS_API_KEY` is set; the user has a key):
+
+0. **Probe first:** `ODDS_API_KEY=… python3 -m sleeper_auction.feeds.props.oddsapi --probe`
+   calls `/events` (free), then **one** event with `markets=player_reception_yds` (1–2
+   credits). Record in the docstring whether props came back on this plan, and the
+   `x-requests-remaining` value. If the plan rejects props, the provider disables itself
+   and Kalshi carries props alone. Never log the key or include it in cache keys; strip
+   `apiKey` from any URL that ends up in a status message or exception.
 
 1. `GET /events` (free) and keep games whose `commence_time` is in the requested week and not
    started.
@@ -690,8 +748,9 @@ With module constants documented like `valuation.W_MODEL`:
     W_PROPS_PARTIAL = 0.25   # 0.3 <= coverage < 0.7
     # else consensus only; else Sleeper only
 
-Mark them **provisional until Phase 5 calibration**. Read `cache/calibration.json` when it
-exists and holds ≥ 4 weeks.
+0.55 is the user's chosen starting weight. Phase 5 calibration replaces these once
+`cache/calibration.json` exists and holds ≥ 4 weeks. Say in the comment that the weights
+were chosen, not fitted.
 
 `prefetch.py`: refresh the consensus inputs every 3 h from Tuesday 12:00 ET to kickoff,
 and hourly on Sunday morning. Everything goes through `common.fetch_*` so the cache is the
@@ -738,6 +797,11 @@ lines; consensus median, producer dedupe and `source_thinks_out`; blend weights 
 - Prompts: news is **reported** (RotoWire), a different class from the unverified Reddit
   chatter, and every item carries its date. "A report from Tuesday is superseded by
   Friday's practice status."
+- **RotoWire RSS** (`rotowire_rss()`): probe `rotowire.com/rss/` for the NFL player-news feed
+  URL. Parse it with `xml.etree` the way `waivers.reddit_posts()` does, cache it for 30 min,
+  and map titles to players through the crosswalk name index. Use it to (a) pick whom to
+  fetch ESPN news for, alongside Sleeper `news_updated`, and (b) cover players ESPN has no
+  ID for. Deduplicate against ESPN items by headline.
 
 **`feeds/values.py`**
 
@@ -758,6 +822,22 @@ lines; consensus median, producer dedupe and `source_thinks_out`; blend weights 
   approach as `valuation._scale_to_pool` (monotone map from value rank to the current
   `base` dollar curve). That keeps "quality" in the units the waiver model already uses.
 - `sos`: remaining opponents from `nflverse.schedule()` × `def_vs_position()` ranks.
+
+**KeepTradeCut** (`ktc()`, opt-in via `KTC_ENABLED=1`):
+
+    ktc(league) -> {sid: {"value", "rank", "pos_rank", "trend"}}
+    trade_values(league) -> {sid: {"fc", "ktc", "consensus", "disagree"}}
+
+- Fetch the redraft rankings page with a 24 h TTL and parse the embedded player array
+  (probe the variable name and keys; pick 1QB vs superflex values from the league). Join on
+  `ktc_id` from the DynastyProcess crosswalk, falling back to name and position.
+- `trade_values`: the two sources use different scales, so **do not average raw values**.
+  Convert each to a percentile within position, average the percentiles (FantasyCalc alone
+  when KTC is off or missing), and map back to dollars through `ros_dollars`. Set
+  `disagree = |pct_fc − pct_ktc| ≥ 0.15`. That is a real signal: the market's votes and its
+  completed trades have diverged. Pass it to the model.
+- Every consumer (waivers quality, look-ahead, `/trades`) reads `trade_values()`, never one
+  source directly, so KTC can be switched off without code changes.
 
 **`feeds/league.py`**
 
@@ -793,7 +873,7 @@ ROS fallback chain.
 - `/api/waivers` candidates carry `ros_dollars` and `news`.
 - FantasyCalc join ≥ 98% of rostered players.
 
-### Phase 5: Calibration, plus an optional trades page
+### Phase 5: Calibration
 
 **`feeds/calibrate.py`**: `python3 -m sleeper_auction.feeds.calibrate --season 2026`
 
@@ -810,11 +890,7 @@ ROS fallback chain.
 - This is how the claim "props predict better than projections" gets tested for this
   league rather than assumed. The initial weights are deliberately moderate.
 
-**Optional `/trades` page** (ask the user first; it is a new tool, not an enrichment):
-FantasyCalc ROS values plus every roster's lineup needs (reuse `waivers._starters` per
-roster) → propose 1-for-1 and 2-for-1 trades where **both** teams' ROS starting-lineup points
-improve and the value gap is within 10%. Deterministic list first, AI narrative second, the
-same pattern as the other pages.
+The `/trades` page is a separate feature: see section 10.
 
 ---
 
@@ -877,6 +953,9 @@ or from `calibration.json` when available.
 | Projection scrapers | 3 h via prefetcher | 2 s between pages (5 s FantasyPros) |
 | ESPN news | 30 min per player | ≤ 60 players per refresh |
 | FantasyCalc | 12 h | |
+| KeepTradeCut (opt-in) | 24 h | One page fetch a day; off unless `KTC_ENABLED=1` |
+| RotoWire RSS | 30 min | |
+| PFR advanced / NGS | 12 h | Weekly-ish upstream |
 | FP ROS ECR | 12 h | |
 | Sleeper transactions / rosters | 10 min | |
 | League scoring | 24 h | |
@@ -917,13 +996,77 @@ or from `calibration.json` when available.
 
 ---
 
-## 9. Open questions for the user
+## 9. Resolved questions and remaining notes
 
-1. **The Odds API**: will you sign up for a key? Free tier props are unverified; the
-   ~$30/month tier certainly covers them. Kalshi alone may be enough, and Phase 5
-   calibration will say.
-2. **Blend weights**: start at 0.55 props / 0.45 consensus when fully covered, or stay
-   consensus-first until 4 weeks of calibration exist?
-3. **`/trades` page**: build it, or keep trade values as an input to waivers and look-ahead
-   only?
-4. **KeepTradeCut**: worth a scraper next to FantasyCalc, or skip?
+All four open questions were answered on 2026-09-25 (see "Decisions" at the top). Two notes
+remain:
+
+- The Odds API key was shared in a chat transcript. It is a free-tier key, but regenerate it
+  from the Odds API dashboard if that matters to you. The implementation reads whatever
+  `ODDS_API_KEY` holds, so rotating it needs no code change.
+- KeepTradeCut's terms prohibit scrapers. It stays opt-in until you decide the one daily
+  fetch is acceptable for personal use.
+
+---
+
+## 10. Separate feature: `/trades`
+
+This is a new tool, not an enrichment. It ships on its own branch and PR **after** Phases 0–4,
+because it needs `trade_values()`, `ros_points()`, `league.faab()` and the crosswalk. It
+follows the shape of the other pages: a deterministic board, then an AI narrative streamed in
+through `board.start_job`.
+
+**Module:** `sleeper_auction/trades.py`, standalone like the others:
+`python3 -m sleeper_auction.trades --draft <id> --me <n> [--limit 15] [--no-ai] [--json]`.
+
+**Routes:** `GET /trades` (`?text=1`, `?noai=1`, `?refresh=1`) and `GET /api/trades`. Add a
+"Trades" tab to every page's nav bar.
+
+**Inputs, per roster in the league:**
+
+- players, with `trade_values()` (FantasyCalc + KTC consensus, `disagree` flag),
+  `ros_points` and bye week;
+- starting lineup by ROS points, built with the same slot logic as `waivers._starters()` /
+  `_flex_bar()` (generalise them to take any roster), using the league's slots;
+- `need` per position = the ROS points lost between this roster's starter and the league
+  median starter at that slot;
+- surplus = bench players whose ROS points would start for another roster.
+
+**Search (deterministic):**
+
+1. Candidate partners: every other roster.
+2. Packages: 1-for-1, 2-for-1 and 1-for-2, drawn from my surplus against their need, and the
+   reverse. Prune to players with trade value above replacement (≥ $3 after `ros_dollars`)
+   so the search stays at a few thousand pairs.
+3. Score each package by:
+   - `my_gain` = change in my ROS starting-lineup points;
+   - `their_gain` = the same for them;
+   - `value_gap` = the difference in consensus trade value, as a percentage of the larger
+     side.
+4. Keep packages where **both gains > 0** and `|value_gap| ≤ 10%`: fair by the market and
+   useful to both, which is what gets accepted. Separately, list up to 3
+   "value" packages where `my_gain > 0` and the value gap favours me by up to 20%. Label
+   them as asks the other manager may decline.
+5. The roster-size check accounts for 2-for-1s (the receiving side must drop someone: name
+   their worst bench player by ROS points).
+6. Rank by `my_gain`, break ties by the smaller value gap, and show the top `--limit`.
+
+**Payload per proposal:** give, get, partner, `my_gain`, `their_gain`, `value_gap`,
+per-player `fc` / `ktc` / `disagree`, `ros_points`, bye weeks, injury and practice status,
+and the latest news headline. The AI is asked to argue both sides, name the pitch to the
+other manager (what their roster gains), and flag when a `disagree` player makes the value
+read unreliable. Schema: `proposals[{give, get, partner, verdict: PROPOSE|CONSIDER|AVOID,
+pitch, risk}]`, `roster_read`.
+
+**Also on the page (rail):** my positional surplus and need vs the league; each opponent's
+need, which is who needs what I have; and a "sell-high" list reusing the Phase 1 `sell-high`
+tag with trade values attached.
+
+**Tests:** a synthetic 4-team league fixture with a known best 1-for-1, the
+both-gain filter, the value-gap filter, 2-for-1 drop handling, and KTC off (FantasyCalc-only
+values).
+
+**Acceptance:** `/trades?noai=1` renders in under 2 s from a warm cache; every proposal has
+`my_gain > 0` and `their_gain > 0` (or sits in the labelled "value" list); the page works
+with KTC disabled; README gains a "Trades" section and the tool table goes from four tools to
+five.
