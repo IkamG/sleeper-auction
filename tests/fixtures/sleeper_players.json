@@ -464,5 +464,15 @@
 "active": true,
 "gsis_id": "00-0032762",
 "espn_id": 3044859
+},
+"8228": {
+"player_id": "8228",
+"full_name": "Jaylen Warren",
+"position": "RB",
+"team": "PIT",
+"active": true,
+"gsis_id": null,
+"espn_id": null,
+"kalshi_id": "a9e82ea3-df9e-4c2b-b87a-37cce2537d36"
 }
 }

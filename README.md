@@ -67,7 +67,8 @@ Signals fed to the model:
 | Signal | Source | Why it matters |
 |---|---|---|
 | Implied team total | Vegas spread + O/U (ESPN; nflverse schedule fills games ESPN has no line for) | The market's own forecast of how much offense exists to share |
-| Weekly projection | Sleeper, native half-PPR | The baseline |
+| Weekly projection | Sleeper, native half-PPR, blended with player props | The baseline. When markets price 70%+ of a player's line, **Proj** is half market mean and half Sleeper; `proj_sleeper` keeps Sleeper's own number |
+| Player props | Kalshi ladders (keyless) + The Odds API over/unders (`ODDS_API_KEY`) | The market's own view of this week, converted to league points. Moves on news faster than projections; a missing line on a starter is itself a signal. Also gives **this week's** floor and ceiling (p10/p90, marked *mkt*) |
 | Boom/bust profile | Last season's actual weekly scores | A projection is a mean; volatility says whether it's reliable |
 | Defense vs position | Computed from real results | A team total can't say "bad for a WR *specifically*" |
 | Snap share + trend | nflverse, joined by PFR id | The earliest sign a projection has gone stale |
@@ -290,6 +291,7 @@ scripted caller wants the whole answer in one response.
         ids.py        ID crosswalk: gsis/espn/pfr/cbs/... -> Sleeper id
         scoring.py    league scoring_settings -> points(stat line)
         nflverse.py   usage, snaps, practice, xFP, red zone, schedule (nflverse/ffverse)
+        props/        kalshi.py, oddsapi.py, implied.py (markets -> points), merge
     tests/            unittest, network-free (fixtures in tests/fixtures)
     run.sh            launcher; picks the best available interpreter
     cache/            on-disk HTTP cache (gitignored)
@@ -303,6 +305,8 @@ Every module runs standalone:
     python3 -m sleeper_auction.lookahead --draft <id> --me <n> [--limit 20]
     python3 -m sleeper_auction.feeds.ids --probe     # crosswalk sizes per id kind
     python3 -m sleeper_auction.feeds.nflverse --probe --season 2026
+    python3 -m sleeper_auction.feeds.props --probe --week N  # series, joins, coverage
+    python3 -m sleeper_auction.feeds.props.implied --fit     # refit prop distribution constants
 
 Tests (offline, stdlib `unittest`, run on Python 3.9 and 3.14):
 
@@ -391,6 +395,28 @@ different shapes and cadences. Rules every feed follows:
 | Next Gen Stats | nflverse `ngs_{receiving,rushing}` (season-total rows) | 12 h | separation, cushion, YAC over expected, rush yards over expected |
 | Schedule | nflverse `games.csv` | 2 h | kickoff time, roof, neutral venues, fallback lines, bye weeks |
 
+### Player props
+
+| Provider | Access | What it gives |
+|---|---|---|
+| [Kalshi](https://kalshi.com) | Public market data, no key | Per-game ladders, one market per threshold ("70+ receiving yards"): passing yards/TDs/INTs/attempts/completions, rushing yards/attempts, receptions, receiving yards, and a 1+/2+/3+ touchdown ladder. A ladder is a whole survival curve, so it gives a mean *and* a floor and ceiling. Players join by id: Kalshi's player UUID is Sleeper's `kalshi_id` |
+| [The Odds API](https://the-odds-api.com) | `ODDS_API_KEY` environment variable | DraftKings and FanDuel over/unders for passing yards and TDs, rushing yards, receptions, receiving yards and anytime TD. The free plan (500 credits a month) includes player props; a full slate costs about 90 credits, so each event is fetched at most once a day and fetching stops at a 60-credit reserve (`ODDS_API_RESERVE`) |
+
+Per player and market, a healthy Kalshi ladder (3+ priced rungs, quoted
+within 5 cents on average, or real open interest) wins; otherwise the
+sportsbook line; otherwise whatever Kalshi has, marked `kalshi-thin`. Each
+book's line is de-vigged and converted separately, then averaged, because
+books often hang different numbers. Markets are converted to expected stats
+(ladder integration, or a skewed distribution around an over/under line with
+constants fitted on 2024–25 weekly data), then to points with the league's
+scoring. Anything without a market comes from Sleeper's projected stat line;
+`coverage` says how much of the number the markets supplied. Games that have
+kicked off are dropped: a live market prices the game state, not the player.
+
+Set the key once in your shell (it is never written to disk by the app):
+
+    export ODDS_API_KEY=...        # optional; Kalshi works without it
+
 nflverse publishes only the **latest** practice status per player-week, so
 the Wednesday → Friday trajectory is built by snapshotting each fetch into
 `cache/history/`. That history lives only on your machine, starts when the app
@@ -434,6 +460,10 @@ league.
   used.
 - Rookies have no volatility history, so floor/ceiling read as unknown rather
   than being invented.
+- Kalshi's per-player markets are thin (open interest is often zero), so a
+  ladder is only trusted when it is quoted tightly. The market/Sleeper blend
+  weight (0.5) is chosen, not fitted, until there are weeks of results to
+  calibrate against.
 - There is no routes-run data (no TPRR/YPRR) in any free feed. Snap share and
   target share are the proxies.
 - WR/CB charts are partial by nature; unlisted receivers are reported unknown.

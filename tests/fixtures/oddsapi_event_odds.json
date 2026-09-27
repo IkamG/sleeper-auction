@@ -1,0 +1,84 @@
+[
+ {
+  "id": "b225458a282e140c44c45651255f2f6c",
+  "sport_key": "americanfootball_nfl",
+  "sport_title": "NFL",
+  "commence_time": "2026-09-27T17:05:00Z",
+  "home_team": "Buffalo Bills",
+  "away_team": "Los Angeles Chargers",
+  "bookmakers": [
+   {
+    "key": "draftkings",
+    "title": "DraftKings",
+    "markets": [
+     {
+      "key": "player_reception_yds",
+      "last_update": "2026-09-27T16:54:31Z",
+      "outcomes": [
+       {
+        "name": "Over",
+        "description": "Ladd McConkey",
+        "price": -110,
+        "point": 59.5
+       },
+       {
+        "name": "Under",
+        "description": "Ladd McConkey",
+        "price": -114,
+        "point": 59.5
+       },
+       {
+        "name": "Over",
+        "description": "Dalton Kincaid",
+        "price": -112,
+        "point": 57.5
+       },
+       {
+        "name": "Under",
+        "description": "Dalton Kincaid",
+        "price": -112,
+        "point": 57.5
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "key": "fanduel",
+    "title": "FanDuel",
+    "markets": [
+     {
+      "key": "player_reception_yds",
+      "last_update": "2026-09-27T16:54:25Z",
+      "outcomes": [
+       {
+        "name": "Over",
+        "description": "Dalton Kincaid",
+        "price": -113,
+        "point": 55.5
+       },
+       {
+        "name": "Under",
+        "description": "Dalton Kincaid",
+        "price": -113,
+        "point": 55.5
+       },
+       {
+        "name": "Over",
+        "description": "Ladd McConkey",
+        "price": -113,
+        "point": 58.5
+       },
+       {
+        "name": "Under",
+        "description": "Ladd McConkey",
+        "price": -113,
+        "point": 58.5
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+]

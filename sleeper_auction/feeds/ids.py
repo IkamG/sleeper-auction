@@ -113,6 +113,8 @@ def build(slp=None, dp=None):
             v = common.sid_str(p.get(sf)) if sf else None
             if v:
                 by[kind].setdefault(v, sid)
+        if pos == "FB":             # board.npos folds FB into RB for the name key
+            pos = "RB"
         if pos in SKILL and info[sid]["name"]:
             k = _pkey(info[sid]["name"], pos, p.get("team"))
             names.setdefault(k, []).append((sid, info[sid]["active"]))

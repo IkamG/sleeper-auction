@@ -1,0 +1,110 @@
+{
+ "markets": [
+  {
+   "ticker": "KXNFLRECYDS-26SEP27CINPIT-PITJWARREN30-15",
+   "event_ticker": "KXNFLRECYDS-26SEP27CINPIT",
+   "title": "Jaylen Warren: 15+ receiving yards",
+   "yes_sub_title": "Jaylen Warren: 15+",
+   "status": "active",
+   "yes_bid_dollars": "0.7100",
+   "yes_ask_dollars": "0.7200",
+   "last_price_dollars": "0.0000",
+   "volume_fp": "0.00",
+   "open_interest_fp": "0.00",
+   "floor_strike": 14.5,
+   "cap_strike": null,
+   "strike_type": "greater",
+   "custom_strike": {
+    "football_player": "a9e82ea3-df9e-4c2b-b87a-37cce2537d36",
+    "football_team": "6aa76797-7833-45e1-85e3-96e0122801e1"
+   },
+   "primary_participant_key": "football_player",
+   "expected_expiration_time": "2026-09-27T23:00:00Z"
+  },
+  {
+   "ticker": "KXNFLRECYDS-26SEP27CINPIT-PITJWARREN30-25",
+   "event_ticker": "KXNFLRECYDS-26SEP27CINPIT",
+   "title": "Jaylen Warren: 25+ receiving yards",
+   "yes_sub_title": "Jaylen Warren: 25+",
+   "status": "active",
+   "yes_bid_dollars": "0.5100",
+   "yes_ask_dollars": "0.5300",
+   "last_price_dollars": "0.5300",
+   "volume_fp": "632.59",
+   "open_interest_fp": "632.59",
+   "floor_strike": 24.5,
+   "cap_strike": null,
+   "strike_type": "greater",
+   "custom_strike": {
+    "football_player": "a9e82ea3-df9e-4c2b-b87a-37cce2537d36",
+    "football_team": "6aa76797-7833-45e1-85e3-96e0122801e1"
+   },
+   "primary_participant_key": "football_player",
+   "expected_expiration_time": "2026-09-27T23:00:00Z"
+  },
+  {
+   "ticker": "KXNFLRECYDS-26SEP27CINPIT-PITJWARREN30-40",
+   "event_ticker": "KXNFLRECYDS-26SEP27CINPIT",
+   "title": "Jaylen Warren: 40+ receiving yards",
+   "yes_sub_title": "Jaylen Warren: 40+",
+   "status": "active",
+   "yes_bid_dollars": "0.2400",
+   "yes_ask_dollars": "0.2600",
+   "last_price_dollars": "0.0000",
+   "volume_fp": "0.00",
+   "open_interest_fp": "0.00",
+   "floor_strike": 39.5,
+   "cap_strike": null,
+   "strike_type": "greater",
+   "custom_strike": {
+    "football_player": "a9e82ea3-df9e-4c2b-b87a-37cce2537d36",
+    "football_team": "6aa76797-7833-45e1-85e3-96e0122801e1"
+   },
+   "primary_participant_key": "football_player",
+   "expected_expiration_time": "2026-09-27T23:00:00Z"
+  },
+  {
+   "ticker": "KXNFLRECYDS-26SEP27CINPIT-PITJWARREN30-50",
+   "event_ticker": "KXNFLRECYDS-26SEP27CINPIT",
+   "title": "Jaylen Warren: 50+ receiving yards",
+   "yes_sub_title": "Jaylen Warren: 50+",
+   "status": "active",
+   "yes_bid_dollars": "0.1400",
+   "yes_ask_dollars": "0.1600",
+   "last_price_dollars": "0.0000",
+   "volume_fp": "0.00",
+   "open_interest_fp": "0.00",
+   "floor_strike": 49.5,
+   "cap_strike": null,
+   "strike_type": "greater",
+   "custom_strike": {
+    "football_player": "a9e82ea3-df9e-4c2b-b87a-37cce2537d36",
+    "football_team": "6aa76797-7833-45e1-85e3-96e0122801e1"
+   },
+   "primary_participant_key": "football_player",
+   "expected_expiration_time": "2026-09-27T23:00:00Z"
+  },
+  {
+   "ticker": "KXNFLRECYDS-26SEP27CINPIT-PITJWARREN30-50-WIDE",
+   "event_ticker": "KXNFLRECYDS-26SEP27CINPIT",
+   "title": "Jaylen Warren: 60+ receiving yards",
+   "yes_sub_title": "Jaylen Warren: 50+",
+   "status": "active",
+   "yes_bid_dollars": "0.0100",
+   "yes_ask_dollars": "0.3000",
+   "last_price_dollars": "0.0000",
+   "volume_fp": "0.00",
+   "open_interest_fp": "0.00",
+   "floor_strike": 59.5,
+   "cap_strike": null,
+   "strike_type": "greater",
+   "custom_strike": {
+    "football_player": "a9e82ea3-df9e-4c2b-b87a-37cce2537d36",
+    "football_team": "6aa76797-7833-45e1-85e3-96e0122801e1"
+   },
+   "primary_participant_key": "football_player",
+   "expected_expiration_time": "2026-09-27T23:00:00Z"
+  }
+ ],
+ "cursor": ""
+}

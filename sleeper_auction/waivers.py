@@ -372,7 +372,7 @@ def faab_bid(cand, budget_left, league):
 
 # ------------------------------------------------------------------ board
 
-def _nflverse(league_id):
+def _nflverse(league_id, week=None):
     """{usage, xfp, redzone} from feeds.nflverse, fetched together; {} if down."""
     try:
         from sleeper_auction.feeds import common, nflverse, scoring
@@ -386,12 +386,31 @@ def _nflverse(league_id):
             rec_value=scoring.rec_value(scoring.league_scoring(league_id)))
     if common.enabled("ffopportunity.pbp"):
         tasks["redzone"] = lambda: nflverse.redzone()
-    res, errs = common.parallel(tasks, timeout=45)
+    if common.enabled("props"):
+        from sleeper_auction.feeds import props
+        tasks["props"] = lambda: props.week_props(sitstart.SEASON, week)
+        tasks["scoring"] = lambda: scoring.league_scoring(league_id)
+    res, errs = common.parallel(tasks, timeout=60)
     for k, e in errs.items():
         sys.stderr.write("waivers: %s unavailable (%s)\n" % (k, e))
     res["_sources"] = {k: {"season": v.get("season"), "weeks": v.get("weeks")}
-                       for k, v in res.items() if isinstance(v, dict)}
+                       for k, v in res.items() if isinstance(v, dict) and k in
+                       ("usage", "xfp", "redzone")}
+    if res.get("props"):
+        res["_sources"]["props"] = {"as_of": res["props"].get("as_of")}
     return res
+
+
+def _props_for(fd, pid, pos, pj):
+    """Market view where one exists. Fringe players rarely have markets, so
+    this is context for the model, never a ranking input."""
+    if not fd.get("props") or not pj or not pj.get("stats"):
+        return None
+    try:
+        from sleeper_auction.feeds import props
+        return props.player_props(fd["props"], pid, pos, pj["stats"], fd.get("scoring"))
+    except Exception:
+        return None
 
 
 def build_board(draft_id, roster_id, week, limit=25):
@@ -437,7 +456,7 @@ def build_board(draft_id, roster_id, week, limit=25):
 
     # Usage, expected points and red-zone share from nflverse. Optional: with
     # the feed down every candidate scores exactly as before.
-    fd = _nflverse(league_id)
+    fd = _nflverse(league_id, week)
     for pid in set(roles) | set((fd.get("usage") or {}).get("players") or {}):
         v = {"usage": sitstart._usage_view(fd, pid), "xfp": sitstart._xfp_view(fd, pid),
              "redzone": sitstart._rz_view(fd, pid)}
@@ -453,6 +472,7 @@ def build_board(draft_id, roster_id, week, limit=25):
                 "wk_proj": (wk.get(pid) or {}).get("proj"),
                 "opponent": ln.get("opp"), "implied_total": ln.get("implied"),
                 "depth": depth.get(pid), "injury": inj.get(db.nname(p["name"])),
+                "props": _props_for(fd, pid, p["pos"], wk.get(pid)),
                 "usage": (roles.get(pid) or {}).get("usage"),
                 "xfp": (roles.get(pid) or {}).get("xfp"),
                 "redzone": (roles.get(pid) or {}).get("redzone"),
@@ -606,6 +626,10 @@ opportunities predicts -- the role is better than the results, which is the \
 buy); and goal-line work on a light overall role ("redzone.gl_carries", \
 "redzone.rz_share"). "feed_sources" says which season and how many weeks \
 those came from. Two games of a share is a hint; say so.
+- "props", when present, is this week's betting-market view in half-PPR \
+points (mean, p10/p90, anytime-TD probability). Most free agents have no \
+market at all; when one does, a market mean well above his projection is a \
+sign the books expect a bigger role this week.
 - QUALITY is "season_value": his auction value in the abstract. A genuinely \
 valuable player is worth rostering even without a need, because rosters churn \
 and good players win leagues.

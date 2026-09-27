@@ -177,8 +177,14 @@ def week_projections(week, season=SEASON):
         st, pl = row.get("stats") or {}, row.get("player") or {}
         pid = str(row.get("player_id") or pl.get("player_id") or "")
         if pid and st.get("pts_half_ppr") is not None:
+            # "stats" is the full projected stat line (Sleeper keys). It is the
+            # filler for components with no market when props are converted
+            # to points, and a source line for the consensus.
             out[pid] = {"proj": st["pts_half_ppr"], "opp": st.get("opponent"),
-                        "gp": st.get("gp")}
+                        "gp": st.get("gp"),
+                        "stats": {k: v for k, v in st.items()
+                                  if isinstance(v, (int, float)) and not k.startswith(
+                                      ("pts_", "adp_", "pos_", "rank_"))}}
     return out
 
 
@@ -478,10 +484,13 @@ def _start_feeds(week, nteam, league_id=None):
         "redzone": lambda: nflverse.redzone(),
         "schedule": lambda: (nflverse.schedule(SEASON) or {}).get(int(week)) or {},
         "ctx": lambda: nflverse.efficiency_ctx(),
+        "props": lambda: _props_mod().week_props(SEASON, week),
+        "scoring": lambda: scoring.league_scoring(league_id),
     }
     names = {"usage": "nflverse.usage", "practice": "nflverse.injuries",
              "xfp": "ffopportunity.ep", "redzone": "ffopportunity.pbp",
-             "schedule": "nflverse.schedule", "ctx": "nflverse.ngs"}
+             "schedule": "nflverse.schedule", "ctx": "nflverse.ngs",
+             "props": "props", "scoring": "league.scoring"}
     tasks = {k: v for k, v in tasks.items() if common.enabled(names[k])}
     from concurrent.futures import ThreadPoolExecutor
     ex = ThreadPoolExecutor(max_workers=max(1, len(tasks)))
@@ -503,11 +512,50 @@ def _start_feeds(week, nteam, league_id=None):
             src["efficiency_ctx"] = out["ctx"].get("sources")
         if out.get("practice"):
             src["practice"] = {"week": out["practice"].get("week")}
+        if out.get("props"):
+            src["props"] = {"as_of": out["props"].get("as_of"),
+                            "players": len(out["props"].get("players") or {})}
         if out.get("xfp"):
             src["xfp"]["scoring_rec"] = out["xfp"].get("scoring_rec")
         out["_sources"] = src
         return out
     return collect
+
+
+def _props_mod():
+    from sleeper_auction.feeds import props
+    return props
+
+
+# Provisional blend until the consensus layer exists (Phase 3): half market,
+# half Sleeper, and only when markets price most of the projection. Chosen,
+# not fitted -- Phase 5 calibration replaces it.
+PROPS_BLEND_W = 0.5
+PROPS_MIN_COVERAGE = 0.7
+
+
+def _final_proj(fd, pid, pos, pj):
+    """(final projection, props view, basis) for one player.
+
+    `pj` is his week_projections() row. Sleeper's number stands whenever the
+    markets do not cover enough of the line, or when Sleeper has none (a
+    player with no projection is usually out, and a stale prop must not
+    resurrect him).
+    """
+    sl = (pj or {}).get("proj")
+    pp = None
+    try:
+        if fd.get("props") and pj and pj.get("stats"):
+            pp = _props_mod().player_props(fd["props"], pid, pos, pj["stats"],
+                                           fd.get("scoring"))
+    except Exception:
+        pp = None
+    if sl is None:
+        return None, pp, None
+    if pp and pp.get("mean") is not None and pp.get("coverage", 0) >= PROPS_MIN_COVERAGE:
+        return (round(PROPS_BLEND_W * pp["mean"] + (1 - PROPS_BLEND_W) * sl, 2), pp,
+                {"props": PROPS_BLEND_W, "sleeper": 1 - PROPS_BLEND_W})
+    return sl, pp, {"sleeper": 1.0}
 
 
 def _merge_lines(lines, sched):
@@ -685,6 +733,8 @@ def build_slate(draft_id, roster_id, week):
         opp_line = lines.get(ln.get("opp")) or {}
         wx = weather(team if ln.get("home") else ln.get("opp"),
                      ln.get("kickoff"), sched.get(team))
+        pfinal, pprops, pbasis = _final_proj(fd, pid, pk["pos"] or base.get("pos"),
+                                             proj.get(pid))
         players.append({
             "id": pid, "name": pk["name"] or base.get("name"),
             "pos": pk["pos"] or base.get("pos"), "team": team,
@@ -694,7 +744,10 @@ def build_slate(draft_id, roster_id, week):
             "season_tier": base.get("tier"),
             "value_conf": base.get("value_conf"),
             "proj_source": base.get("proj_source"),
-            "proj": (proj.get(pid) or {}).get("proj"),
+            "proj": pfinal,
+            "proj_sleeper": (proj.get(pid) or {}).get("proj"),
+            "proj_basis": pbasis,
+            "props": pprops,
             "season_proj": base.get("proj"),
             "opponent": ln.get("opp"), "home": ln.get("home"),
             "game_total": ln.get("total"), "spread": ln.get("spread"),
@@ -767,7 +820,7 @@ def build_slate(draft_id, roster_id, week):
                 tot += a
                 opp_locked += a
             else:
-                tot += (proj.get(x) or {}).get("proj", 0) or 0.0
+                tot += _final_proj(fd, x, info.get("pos"), proj.get(x))[0] or 0.0
         opp_total = round(tot, 1)
     return {"draft_id": draft_id, "phase": phase, "locked_points": locked_pts,
             "opp_locked_points": round(opp_locked, 1),
@@ -974,6 +1027,18 @@ receivers, rush yards over expected per attempt for backs, PFR drops, yards \
 after contact and broken tackles. It is descriptive context, not a \
 projection: it explains WHY a rate is high or low, and it does not override \
 the projection or the matchup.
+- "props" is what the betting market implies for this player this week, \
+converted to half-PPR points from yardage, reception and touchdown markets \
+(Kalshi ladders and sportsbook over/unders). Markets move on news faster than \
+projections do. A prop mean well below the projection usually means the \
+market has priced in an injury or a role change, so treat that gap as \
+information. "coverage" is how much of the number came from markets rather \
+than the projection. "anytime_td" is the market's probability that he scores. \
+"p10"/"p90" are this week's market floor and ceiling. A starter with NO props \
+posted can itself be a signal: books pull lines when a player's status is \
+uncertain. Say so, don't assume. "proj" is the final number: half market, \
+half Sleeper when coverage is 0.7 or more, else Sleeper ("proj_basis" says \
+which); "proj_sleeper" is Sleeper's own number.
 - "feed_sources" at the top level says which season and how many weeks each \
 of those was computed from. A line from "line_source": "nflverse" came from \
 the schedule file because ESPN had none; "line_sources_disagree" means the \
@@ -1331,10 +1396,10 @@ def report(slate, pos, ai=None):
                                            slate["opp_projected"]))
          + "  ->  posture: %s" % pos["mode"].upper(),
          "  " + pos["guidance"], ""]
-    o.append("%-1s %-22s %-4s %-6s %-7s %-6s %-7s %-13s %-9s %-8s %s"
-             % ("", "PLAYER", "POS", "PROJ", "ACTUAL", "IMPL", "VS",
+    o.append("%-1s %-22s %-4s %-6s %-6s %-7s %-6s %-7s %-15s %-9s %-8s %s"
+             % ("", "PLAYER", "POS", "PROJ", "MKT", "ACTUAL", "IMPL", "VS",
                 "FLOOR/CEIL", "DvP", "TGT%", "NOTE"))
-    o.append("-" * 121)
+    o.append("-" * 130)
     for p in slate["players"]:
         v = p["volatility"] or {}
         dv = p.get("dvp") or {}
@@ -1379,13 +1444,16 @@ def report(slate, pos, ai=None):
                               (" %+.0f" % p["vs_proj"]) if p.get("vs_proj") else "")
         elif p.get("locked"):
             act = "live"
-        o.append("%-1s %-22s %-4s %-6s %-7s %-6s %-7s %-13s %-9s %-8s %s" % (
+        fc = [re.sub(r"<[^>]+>", "", str(x)) for x in _floor_ceil(p, "-")]
+        o.append("%-1s %-22s %-4s %-6s %-6s %-7s %-6s %-7s %-15s %-9s %-8s %s" % (
             "*" if p["starting"] else "", (p["name"] or "?")[:22], p["pos"],
             p["proj"] if p["proj"] is not None else "-",
+            ("%.1f" % p["props"]["mean"]) if (p.get("props") or {}).get("mean") is not None
+            else "-",
             act,
             p["implied_total"] if p["implied_total"] is not None else "-",
             ("%s%s" % ("@" if not p["home"] else "", p["opponent"] or "?")),
-            "%s / %s" % (v.get("floor", "-"), v.get("ceiling", "-")),
+            "%s / %s" % tuple(fc),
             ("#%s %s" % (dv["rank"], dv["ppg"]) if dv.get("rank") else "-"),
             tg, ", ".join(note)))
     o.append("")
@@ -1488,6 +1556,26 @@ def _data_panel(names=("nflverse", "ffopportunity", "ids", "dynastyprocess",
         return ""
 
 
+def _mkt_cell(p):
+    pp = p.get("props") or {}
+    if pp.get("mean") is None:
+        return "&mdash;"
+    dot = "&#9679;" if pp.get("coverage", 0) >= 0.7 else "&#9680;"
+    return '<span title="market mean, coverage %d%%%s">%s %.1f</span>' % (
+        round(100 * pp.get("coverage", 0)),
+        ", anytime TD %d%%" % round(100 * pp["anytime_td"]) if pp.get("anytime_td") else "",
+        dot, pp["mean"])
+
+
+def _floor_ceil(p, dash):
+    """This week's market p10/p90 when props exist, else last season's."""
+    pp = p.get("props") or {}
+    if pp.get("p10") is not None and pp.get("p90") is not None:
+        return ("%s" % pp["p10"], "%s <small class='mut'>mkt</small>" % pp["p90"])
+    v = p.get("volatility") or {}
+    return (v.get("floor", dash), v.get("ceiling", dash))
+
+
 def _tgt_cell(p):
     u = p.get("usage") or {}
     if p.get("pos") not in ("RB", "WR", "TE"):
@@ -1552,13 +1640,14 @@ def html_report(slate, pos, ai=None, job_id=None):
         rows.append(
             '<tr class="%s"><td>%s</td><td class="nm">%s</td>'
             '<td><span class="pos %s">%s</span></td><td class="big">%s</td>'
-            '<td class="%s">%s</td>'
+            '<td class="mut">%s</td><td class="%s">%s</td>'
             '<td>%s</td><td class="mut">%s%s</td><td class="mut">%s</td>'
             '<td class="mut">%s / %s</td><td class="%s">%s</td>'
             '<td class="mut">%s</td><td class="mut">%s</td><td class="mut">%s</td></tr>' % (
                 "st" if p["starting"] else "", "&#9733;" if p["starting"] else "",
                 p["name"], p["pos"], p["pos"],
                 p["proj"] if p["proj"] is not None else "&mdash;",
+                _mkt_cell(p),
                 ("pl" if (p.get("vs_proj") or 0) > 0 else
                  "mn" if p.get("actual") is not None else "mut"),
                 ("DNP" if p.get("dnp") else
@@ -1568,7 +1657,7 @@ def html_report(slate, pos, ai=None, job_id=None):
                 p["implied_total"] if p["implied_total"] is not None else "&mdash;",
                 "@" if not p["home"] else "", p["opponent"] or "?",
                 p["spread"] if p["spread"] is not None else "&mdash;",
-                v.get("floor", "&mdash;"), v.get("ceiling", "&mdash;"),
+                *_floor_ceil(p, "&mdash;"),
                 ("pl" if (dv.get("rank") or 99) >= 22 else
                  "mn" if (dv.get("rank") or 0) <= 10 else "mut"),
                 ("#%s &middot; %s" % (dv["rank"], dv["ppg"])
@@ -1666,13 +1755,17 @@ document.querySelectorAll('.nav a').forEach(function(a){a.href=a.dataset.p+qs;
 <div class="mut" style="margin-top:4px">__GUIDE__</div></div></div>
 <div class="wrap">
  <div class="main"><div class="panel" style="padding:0"><table>
-  <thead><tr><th></th><th>Player</th><th>Pos</th><th>Proj</th><th>Actual</th><th>Team total</th>
+  <thead><tr><th></th><th>Player</th><th>Pos</th><th>Proj</th><th>Mkt</th><th>Actual</th><th>Team total</th>
   <th>Opp</th><th>Spread</th><th>Floor / Ceil</th><th>DvP</th><th>Snap%</th>
   <th>Tgt%</th><th>Flags</th></tr></thead>
   <tbody>__ROWS__</tbody></table></div>
   <div class="mut" style="font-size:12px">&#9733; = in your Sleeper starting lineup &middot;
   <b>Team total</b> is the Vegas implied points for that player's offense &middot;
-  <b>Floor / Ceil</b> are 20th/80th percentile weekly half-PPR scores &middot;
+  <b>Proj</b> blends the market and Sleeper half and half when markets cover 70%+ of the
+  line (else Sleeper) &middot; <b>Mkt</b> is the betting-market mean in half-PPR points
+  (&#9679; full coverage, &#9680; partial) &middot;
+  <b>Floor / Ceil</b> are this week's market 10th/90th percentiles when marked <i>mkt</i>,
+  otherwise last season's 20th/80th percentile weekly half-PPR scores &middot;
   <b>DvP</b> is the opponent's rank (1 = toughest of 32) and half-PPR points per game
   allowed to this position, computed from completed games &middot;
   <b>Snap%</b> is last-3-game snap share; green/red flags a shift of 8+ points &middot;
