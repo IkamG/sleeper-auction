@@ -804,6 +804,17 @@ def build_slate(draft_id, roster_id, week):
             "efficiency_ctx": _ctx_view(fd, pid, only_extreme=True),
         })
     players.sort(key=lambda p: -(p["proj"] or 0))
+    # Reported news (RotoWire via ESPN, and RotoWire's RSS), two items each.
+    # Cache-only: missing players are fetched in the background for next load.
+    try:
+        from sleeper_auction.feeds import news as newsfeed
+        nw = newsfeed.player_news([p["id"] for p in players]
+                                  + [x for x in (mu or {}).get("opp_starters") or []
+                                     if x and x != "0"])
+    except Exception:
+        nw = {}
+    for pl in players:
+        pl["news"] = nw.get(str(pl["id"])) or None
 
     for pl in players:
         if pl.get("actual") is not None and pl.get("proj") is not None:
@@ -1080,6 +1091,10 @@ uncertain. Say so, don't assume. "proj" is the final number: props weighted \
 median (Sleeper alone if no consensus); "proj_basis" gives the weights and \
 whether they were chosen or calibrated; "proj_sleeper" is Sleeper's own \
 number.
+- "news" is REPORTED news for the player (RotoWire blurbs via ESPN, and \
+RotoWire's feed), up to two items from the last seven days, each dated. A \
+report from Tuesday is superseded by Friday's practice status; say so when \
+they conflict rather than trusting the older item.
 - "feed_sources" at the top level says which season and how many weeks each \
 of those was computed from. A line from "line_source": "nflverse" came from \
 the schedule file because ESPN had none; "line_sources_disagree" means the \
@@ -1597,6 +1612,11 @@ def _data_panel(names=("nflverse", "ffopportunity", "ids", "dynastyprocess",
         return ""
 
 
+def _esc(s):
+    import html as _h
+    return _h.escape(str(s or ""), quote=True)
+
+
 def _proj_cell(p):
     if p.get("proj") is None:
         return "&mdash;"
@@ -1685,6 +1705,11 @@ def html_report(slate, pos, ai=None, job_id=None):
                 "&middot;".join('<b class="%s">%s</b>' % (
                     {"FP": "pl", "LP": "vol", "DNP": "mn"}.get(x, "mut"), x)
                     for x in pr["trajectory"])))
+        if p.get("news"):
+            n0 = p["news"][0]
+            notes.append('<span class="vol" title="%s">&#128240; %s</span>' % (
+                _esc("%s -- %s" % (n0.get("published") or "", n0.get("text") or "")),
+                _esc((n0.get("published") or "")[5:10])))
         xf = p.get("xfp") or {}
         if xf.get("diff_pg") is not None and abs(xf["diff_pg"]) >= 3 and xf.get("games", 0) >= 2:
             notes.append('<b class="%s" title="actual %s vs expected %s pts/g">xFP %+.1f</b>'

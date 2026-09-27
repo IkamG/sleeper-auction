@@ -179,6 +179,18 @@ def _by_name(cw, name, pos, team=None):
     return None
 
 
+def external(sid, kind, cw=None):
+    """Sleeper id -> an external id of `kind` (first mapping wins)."""
+    cw = cw or crosswalk()
+    rev = cw.setdefault("_rev", {})
+    if kind not in rev:
+        m = {}
+        for ext, s in cw["by"].get(kind, {}).items():
+            m.setdefault(s, ext)
+        rev[kind] = m
+    return rev[kind].get(str(sid))
+
+
 def _count(kind, what):
     c = COUNTS.setdefault(kind, {"hit": 0, "name_fallback": 0, "miss": 0})
     c[what] += 1

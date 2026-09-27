@@ -81,6 +81,7 @@ Signals fed to the model:
 | Depth chart | Sleeper, live | Current team, current season — never stale |
 | Injuries | ESPN | Status, body part, expected return |
 | Weather | Open-Meteo, at kickoff (kickoff to +3 h) | Wind above ~15 mph suppresses passing and kicking. Roof comes from the nflverse schedule; neutral-site games (Rio, London, …) use the venue's own coordinates |
+| News | ESPN per-player fantasy news (RotoWire blurbs) + RotoWire's NFL feed | Reported, dated news, two items a player, last seven days. Shown as a 📰 flag with the text on hover |
 | WR/CB matchup | Optional chart image | Per-receiver, against the cornerback projected to cover him |
 
 Defense-vs-position is **computed, not scraped**: every weekly score is
@@ -147,8 +148,19 @@ crowd-sourced waiver demand measured rather than opined. High demand on a
 player who does not help your roster is a reason to let him go, not to chase
 him: demand sets his *price*, not his value to you.
 
-The league's FAAB budget is read from Sleeper, so bids come back in real
-dollars as well as percentages. Bids price **need plus upside**, not need
+**FAAB is real.** Sleeper rosters carry `waiver_budget_used`, so the header
+shows what you actually have left, and what every opponent has left. No bid
+is ever suggested above the richest opponent's remaining budget plus a dollar:
+nobody can outbid that. The league's completed waiver claims give **this
+room's clearing prices** (median winning bid as a share of the budget,
+contested vs uncontested, by position); once there are eight or more, bids are
+scaled by what this room pays for a contested add against the 5% community
+convention (clamped to 0.6–1.6×).
+
+From week 3, **quality** is rest-of-season value, not the preseason auction
+price: FantasyCalc trade value where the player has one, otherwise his
+rest-of-season projected points, both mapped onto the draft's dollar curve so
+the units do not change. Candidates carry reported news from the last week. Bids price **need plus upside**, not need
 alone — pricing off this week's lineup help put every September add at zero,
 which is how you lose the back you needed in October because you would not bid
 on him in week 2. A player nobody else is adding is capped near the minimum:
@@ -189,6 +201,7 @@ Candidates are tagged by *why* they are worth a bench spot:
 | `efficient-unused` + NGS | When rush yards over expected or separation agrees with the gap, the why says so: independent evidence the efficiency is the player's, not the scheme's. |
 | `rising-share` | Target share up 8+ points over the last three games, on 4+ targets a game. Usage leads production. |
 | `buy-low` | Expected points from his opportunities run 3+ a game ahead of what he has scored. |
+| ROS $ / FP ROS | Rest-of-season value on the draft dollar curve and FantasyPros' rest-of-season rank, with the 30-day trade-value trend and strength of the remaining schedule in the payload. A starter whose trade value is falling is named as a weak point. |
 | `sell-high` | Your roster only: scoring 4+ a game above expected over three games, driven by touchdowns. Named as a weak point while he is still producing. |
 
 Age is a direct discount — a stash is a bet on future value, and a 31-year-old
@@ -296,6 +309,9 @@ scripted caller wants the whole answer in one response.
         projections/  one adapter per projection site + consensus.py
         blend.py      final weekly number: props over the consensus
         prefetch.py   background refresh of the slow scrapers
+        news.py       ESPN per-player news (RotoWire), RotoWire RSS
+        values.py     FantasyCalc, KeepTradeCut (opt-in), FantasyPros ROS, ROS points, SOS
+        league.py     real FAAB remaining, waiver history, the room's prices
     tests/            unittest, network-free (fixtures in tests/fixtures)
     run.sh            launcher; picks the best available interpreter
     cache/            on-disk HTTP cache (gitignored)
@@ -398,6 +414,10 @@ different shapes and cadences. Rules every feed follows:
 | Play-by-play | ffopportunity `ep_pbp_rush/pass_<season>` | 6 h | red-zone and goal-line share, team pass rate over expected |
 | PFR advanced | nflverse `advstats_week_{rec,rush}_<season>` | 12 h | drops, yards after contact, broken tackles (joined by PFR id) |
 | Next Gen Stats | nflverse `ngs_{receiving,rushing}` (season-total rows) | 12 h | separation, cushion, YAC over expected, rush yards over expected |
+| News | ESPN per-player news, RotoWire RSS, Sleeper `news_updated` | 30 min | reported news on sit/start and waivers (fetched in the background) |
+| Trade values | FantasyCalc (real trades; KeepTradeCut opt-in) | 12 h | rest-of-season quality, trend |
+| ROS rank / points | FantasyPros ROS ECR; Sleeper future-week projections, FanDuel REMAINING | 12 h | look-ahead, waiver quality |
+| League FAAB | Sleeper rosters and transactions | 10 min | FAAB left, opponent budgets, room prices |
 | Schedule | nflverse `games.csv` | 2 h | kickoff time, roof, neutral venues, fallback lines, bye weeks |
 
 ### Player props
@@ -507,9 +527,12 @@ league.
   [faabtastic](https://www.faabtastic.com/) is sign-in gated with no current
   season data, and [faablab](https://www.faablab.app/) is a client-rendered app
   with nothing server-side to read. Sleeper's trending-adds counts are used
-  instead, which are measured rather than opined.
-- Sleeper does not expose FAAB spent to date, so budgets shown are the season
-  budget, not what remains.
+  instead, which are measured rather than opined, alongside this league's own
+  clearing prices.
+- KeepTradeCut is opt-in (`KTC_ENABLED=1`) because its terms prohibit
+  scrapers, and as of the last probe its redraft page embeds only three
+  players (the rest load in the browser), so it contributes almost nothing.
+  Every consumer works on FantasyCalc alone.
 
 ---
 

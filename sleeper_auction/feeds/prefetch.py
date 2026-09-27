@@ -23,6 +23,8 @@ from sleeper_auction.feeds import common
 
 TICK = 600
 _LOCK = threading.Lock()
+_KICKED = {}
+KICK_EVERY = 600
 _STARTED = {"thread": None}
 STATE = "prefetch-state.json"
 
@@ -107,6 +109,35 @@ def refresh(season, week, force=False):
         _LOCK.release()
 
 
+ROS_EVERY = 12 * 3600
+
+
+def refresh_ros(season, from_week):
+    """Rest-of-season inputs: Sleeper future weeks, FanDuel REMAINING,
+    FantasyPros ROS ECR. Twice a day is plenty; they move slowly."""
+    from sleeper_auction.feeds import values
+    from sleeper_auction.feeds.projections import fanduel
+    for name, fn in (("values.ros", lambda: values.ros_points(season, from_week,
+                                                              cache_only=False)),
+                     ("projections.fanduel", lambda: fanduel.fetch_remaining()),
+                     ("fantasypros.ros", lambda: values.fp_ros(cache_only=False))):
+        try:
+            fn()
+        except Exception as e:
+            common.fail(name, e)
+    st = _load()
+    st["ros-%s" % season] = int(time.time())
+    _save(st)
+
+
+def kick_ros(season, from_week):
+    k = "ros-%s-%s" % (season, from_week)
+    if time.time() - _KICKED.get(k, 0) < KICK_EVERY:
+        return
+    _KICKED[k] = time.time()
+    threading.Thread(target=refresh_ros, args=(season, from_week), daemon=True).start()
+
+
 def due(season, week, now_ts=None):
     last = _load().get("%s-%s" % (season, week))
     return not last or (now_ts or time.time()) - last >= interval()
@@ -120,10 +151,10 @@ def tick():
     for w in weeks:
         if due(season, w):
             refresh(season, w)
+    if time.time() - _load().get("ros-%s" % season, 0) >= ROS_EVERY:
+        refresh_ros(season, week + 1)
 
 
-_KICKED = {}
-KICK_EVERY = 600
 
 
 def kick(season, week):

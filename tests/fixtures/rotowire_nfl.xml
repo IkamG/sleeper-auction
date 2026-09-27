@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>RotoWire.com Latest NFL News</title>
+    <copyright>Copyright (c) 2026 Roto Sports, Inc, All rights reserved.</copyright>
+    <description>Fantasy Sports from RotoWire.com</description>
+    <category>Fantasy Sports</category>
+    <language>en-us</language>
+    <ttl>10</ttl>
+    <image>
+      <title>RotoWire.com Fantasy Sports</title>
+      <width>120</width>
+      <height>30</height>
+      <link>https://www.rotowire.com</link>
+      <url>https://assets.rotowire.com/images/logo_roto_small.gif</url>
+    </image>
+    <link>https://www.rotowire.com</link>
+    <item>
+        <guid>nfl639416</guid>
+        <title>Tyson Bagent: Will serve in backup role Monday</title>
+        <link>https://www.rotowire.com//football/player/tyson-bagent-16946</link>
+        <description>Bagent, who is listed as questionable for Monday's game against the Eagles, cleared concussion protocol Sunday and will serve as the Bears' No. 2 quarterback in Week 3, Jay Glazer reported on "Fox NFL Sunday."
+
+        Visit RotoWire.com for more analysis on this update.</description>
+        <pubDate>Sun, 27 Sep 2026 10:09:00 AM PDT</pubDate>
+    </item>
+    <item>
+        <guid>nfl639415</guid>
+        <title>Case Keenum: Headed for Week 3 start</title>
+        <link>https://www.rotowire.com//football/player/case-keenum-8065</link>
+        <description>Keenum is in line to start Monday's game against the Eagles, Jay Glazer reported on "Fox NFL Sunday."
+
+        Visit RotoWire.com for more analysis on this update.</description>
+        <pubDate>Sun, 27 Sep 2026 9:59:00 AM PDT</pubDate>
+    </item>
+    <item>
+        <guid>nfl639414</guid>
+        <title>Zay Flowers: Likely to be limited, if active</title>
+        <link>https://www.rotowire.com//football/player/zay-flowers-16919</link>
+        <description>The Ravens continue to view Flowers (hamstring) as a game-time decision leading up to Sunday's tilt with the Cowboys in Rio de Janeiro, and the wide receiver is expected to be limited to "somewhere in the realm of 20 to 30 plays" if he suits up, Ian Rapoport of NFL Network reports.
+
+        Visit RotoWire.com for more analysis on this update.</description>
+        <pubDate>Sun, 27 Sep 2026 9:48:00 AM PDT</pubDate>
+    </item>
+    <item>
+        <guid>nfl639390</guid>
+        <title>Zay Flowers: Looks good pregame, still iffy for Week 3</title>
+        <link>https://www.rotowire.com//football/player/zay-flowers-16919</link>
+        <description>Flowers (hamstring) "looked good" during a pregame workout, but he remains questionable for Sunday's game against the Cowboys in Rio de Janeiro, and the Ravens are still mulling whether he'll play, Adam Schefter of ESPN reports.
+
+        Visit RotoWire.com for more analysis on this update.</description>
+        <pubDate>Sun, 27 Sep 2026 9:12:00 AM PDT</pubDate>
+    </item>
+    <item>
+        <guid>nfl639368</guid>
+        <title>DJ Moore: Active for Week 3</title>
+        <link>https://www.rotowire.com//football/player/dj-moore-12477</link>
+        <description>Moore (shoulder) is listed as active for Sunday's game against the Chargers.
+
+        Visit RotoWire.com for more analysis on this update.</description>
+        <pubDate>Sun, 27 Sep 2026 8:44:00 AM PDT</pubDate>
+    </item>
+  </channel>
+</rss>
