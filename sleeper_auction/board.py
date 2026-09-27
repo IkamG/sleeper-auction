@@ -971,6 +971,36 @@ class H(BaseHTTPRequestHandler):
                                       "text/plain; charset=utf-8")
                 return self._send(200, analyze.html_report(a),
                                   "text/html; charset=utf-8")
+            if path in ("/trades", "/api/trades"):
+                did = q.get("draft") or ARGS.draft
+                rid = q.get("me") or ARGS.me
+                if not did or not rid:
+                    return self._send(400, json.dumps(
+                        {"error": "need draft id and roster id (?draft=..&me=..)"}))
+                from sleeper_auction import trades
+                tb = trades.build_board(did, int(rid), int(q.get("limit") or 15))
+                job = None
+                ai = None
+                jid = "tr-%s-%s" % (did, rid)
+                if not q.get("noai"):
+                    rf = bool(q.get("refresh"))
+                    if rf:
+                        with JOBS["lock"]:
+                            JOBS["items"].pop(jid, None)
+                    if path == "/api/trades":
+                        ai = trades.ai_analyze(tb, refresh=rf)
+                    else:
+                        job = start_job(jid, lambda: trades.ai_analyze(tb, refresh=rf),
+                                        trades.ai_cards)
+                        if job["status"] != "pending":
+                            ai = job.get("result")
+                if path == "/api/trades":
+                    return self._send(200, json.dumps({"board": tb, "ai": ai}, default=str))
+                if q.get("text"):
+                    return self._send(200, trades.report(tb, ai), "text/plain; charset=utf-8")
+                return self._send(200, trades.html_report(
+                    tb, ai, job_id=jid if job and job["status"] == "pending" else None),
+                    "text/html; charset=utf-8")
             if path == "/api/feeds":
                 from sleeper_auction import feeds
                 return self._send(200, json.dumps(feeds.status(), default=str))
@@ -1037,7 +1067,7 @@ tr.poor{opacity:.34}
 .cliff{color:#f85149;font-weight:600}
 #err{display:none;padding:9px 16px;background:#3a1518;color:#f85149;font-size:13px}
 </style></head><body>
-<div class="nav"><a href="#" data-p="/sitstart">Sit / Start</a><a href="#" data-p="/waivers">Waivers</a><a href="#" data-p="/lookahead">Look Ahead</a><a href="#" data-p="/board">Draft board</a><a href="#" data-p="/analysis">Analysis</a><span class="navsp"></span><span class="navmut" id="nav-league"></span></div>
+<div class="nav"><a href="#" data-p="/sitstart">Sit / Start</a><a href="#" data-p="/waivers">Waivers</a><a href="#" data-p="/lookahead">Look Ahead</a><a href="#" data-p="/trades">Trades</a><a href="#" data-p="/board">Draft board</a><a href="#" data-p="/analysis">Analysis</a><span class="navsp"></span><span class="navmut" id="nav-league"></span></div>
 <script>(function(){var qs=location.search||'';
 document.querySelectorAll('.nav a').forEach(function(a){a.href=a.dataset.p+qs;
   if(location.pathname===a.dataset.p)a.className='on';});})();</script>

@@ -1,12 +1,13 @@
 # sleeper-auction
 
-Four tools for a Sleeper **auction** league, half-PPR by default:
+Six tools for a Sleeper **auction** league, half-PPR by default:
 
 | | |
 |---|---|
 | **Sit / start** | Weekly start-or-sit calls from Vegas lines, matchups, usage and AI reasoning |
 | **Waivers** | Who to add, what to drop, and how much FAAB to bid |
 | **Look ahead** | Long-term roster weak points, and stashes that pay off later |
+| **Trades** | Offers that improve both lineups and are fair by the trade market |
 | **Draft board** | Live auction values during the draft, inflation-adjusted as the room spends |
 | **Analysis** | Post-draft grading of every team against market value and the room's own clearing price |
 
@@ -36,7 +37,7 @@ yourself up by Sleeper username:
 
 ## The tools
 
-All four are served by the same process and share a tab bar.
+All of them are served by the same process and share a tab bar.
 
 ### Sit / start — `/` or `/sitstart?week=N`
 
@@ -212,6 +213,36 @@ The rail shows **thin positions** (no bench cover) and **bye clusters**
 (several starters idle the same week). Every page's rail also has a small
 **Data** panel giving each feed's freshness.
 
+### Trades — `/trades`
+
+Finds trades another manager might actually accept. A package is proposed only
+when it passes two tests:
+
+- **Both lineups improve.** Each side's starting lineup is rebuilt with the
+  league's own slots (QB, RB×2, WR×2, TE, FLEX, K, DEF) on rest-of-season
+  projected points, before and after. `My +` and `Their +` must both be
+  positive. In a 2-for-1 the side receiving two players cuts its worst bench
+  player, and the page names him.
+- **Fair by the market.** The two sides' consensus trade values (FantasyCalc,
+  plus KeepTradeCut when enabled) are within 10% of each other.
+
+The search is deterministic: 1-for-1, 2-for-1 and 1-for-2 against every other
+roster, using players worth $3 or more in trade value (kickers and defences
+are never traded). Results are ranked by what they add to your lineup, at most
+three per partner, so the list is not one roster permuted. Up to three
+**value asks** lean your way by up to 20% and are labelled as asks the other
+manager may decline. The AI then argues both sides of each offer, writes the
+pitch from the other manager's point of view (what their lineup gains), and
+flags players whose two value sources disagree.
+
+The rail shows where you sit against the league-median starter at each
+position, your bench players who would start elsewhere, which opponents need
+what, and your sell-high candidates (scoring well above expected points on
+touchdowns).
+
+An empty list is a real answer: if your starters are strong and your bench
+has no trade value, no offer helps both sides, and the page says so.
+
 ### Draft board — `/board`
 
 Polls Sleeper every 5 seconds, drops drafted players, and re-prices everyone
@@ -297,6 +328,7 @@ scripted caller wants the whole answer in one response.
       sitstart.py     weekly start/sit
       waivers.py      waiver wire: pickups, drops, FAAB bids
       lookahead.py    long-term weak points and stash candidates
+      trades.py       two-way trade finder
       valuation.py    VORP -> auction dollars, tiers, confidence
       sleeper.py      Sleeper API client (drafts, picks, budgets, user lookup)
       sources/        ranking-source adapters
@@ -324,6 +356,7 @@ Every module runs standalone:
     python3 -m sleeper_auction.sitstart --draft <id> --me <n> --week <n> [--no-ai]
     python3 -m sleeper_auction.waivers  --draft <id> --me <n> --week <n> [--limit 25]
     python3 -m sleeper_auction.lookahead --draft <id> --me <n> [--limit 20]
+    python3 -m sleeper_auction.trades   --draft <id> --me <n> [--limit 15] [--no-ai] [--json]
     python3 -m sleeper_auction.feeds.ids --probe     # crosswalk sizes per id kind
     python3 -m sleeper_auction.feeds.nflverse --probe --season 2026
     python3 -m sleeper_auction.feeds.props --probe --week N  # series, joins, coverage
@@ -347,6 +380,8 @@ Tests (offline, stdlib `unittest`, run on Python 3.9 and 3.14):
     GET  /waivers?week=N                   waiver wire (?text=1, ?noai=1)
     GET  /lookahead                        long-term outlook and stashes
     GET  /api/lookahead?draft=&me=         look-ahead JSON
+    GET  /trades                           trade finder (?text=1, ?noai=1, ?refresh=1)
+    GET  /api/trades?draft=&me=            trade finder JSON
     GET  /api/sitstart?draft=&me=&week=    sit/start JSON
     GET  /api/waivers?draft=&me=&week=     waiver wire JSON
     GET  /api/user/<username>/drafts       find drafts by Sleeper username

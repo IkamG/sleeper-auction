@@ -1048,7 +1048,7 @@ tr:hover td{background:#1c2128}
 @keyframes sp{to{transform:rotate(360deg)}}
 @media(max-width:900px){.rail{flex:1 1 100%}}
 </style></head><body>
-<div class="nav"><a href="#" data-p="/sitstart">Sit / Start</a><a href="#" data-p="/waivers">Waivers</a><a href="#" data-p="/lookahead">Look Ahead</a><a href="#" data-p="/board">Draft board</a><a href="#" data-p="/analysis">Analysis</a><span class="navsp"></span><form class="wksel" method="get" action="">__HIDDEN__week&nbsp;<select name="week" onchange="this.form.submit()">__OPTS__</select><noscript><button type="submit">go</button></noscript></form></div>
+<div class="nav"><a href="#" data-p="/sitstart">Sit / Start</a><a href="#" data-p="/waivers">Waivers</a><a href="#" data-p="/lookahead">Look Ahead</a><a href="#" data-p="/trades">Trades</a><a href="#" data-p="/board">Draft board</a><a href="#" data-p="/analysis">Analysis</a><span class="navsp"></span><form class="wksel" method="get" action="">__HIDDEN__week&nbsp;<select name="week" onchange="this.form.submit()">__OPTS__</select><noscript><button type="submit">go</button></noscript></form></div>
 <script>(function(){var qs=location.search||'';
 var here=location.pathname==='/'?'/sitstart':location.pathname;
 document.querySelectorAll('.nav a').forEach(function(a){a.href=a.dataset.p+qs;
