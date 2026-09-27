@@ -1084,12 +1084,13 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--draft", required=True)
     ap.add_argument("--me", type=int, required=True)
-    ap.add_argument("--week", type=int, default=1)
+    ap.add_argument("--week", type=int, default=None,
+                    help="default: the current NFL week")
     ap.add_argument("--limit", type=int, default=25)
     ap.add_argument("--no-ai", action="store_true")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
-    board = build_board(a.draft, a.me, a.week, a.limit)
+    board = build_board(a.draft, a.me, a.week or db.current_week(), a.limit)
     ai = None if a.no_ai else ai_analyze(board)
     if a.json:
         print(json.dumps({"board": board, "ai": ai}, indent=1, default=str))

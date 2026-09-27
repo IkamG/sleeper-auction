@@ -372,7 +372,14 @@ def depth_charts():
 
 
 def injuries():
-    d = db.gj("%s/injuries" % ESPN, headers=ESPN_HDRS, key="espn-inj", ttl=1800)
+    # A failed fetch serves the last cached report (any age), else nothing:
+    # an injury feed hiccup must not take the whole page down.
+    try:
+        from sleeper_auction.feeds import common
+        d = common.fetch_json("%s/injuries" % ESPN, "espn-inj", 1800, headers=ESPN_HDRS,
+                              feed="espn.injuries")
+    except Exception:
+        return {}
     out = {}
     for team in d.get("injuries", []):
         for it in team.get("injuries", []):
@@ -1876,13 +1883,14 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--draft", required=True)
     ap.add_argument("--me", type=int, required=True)
-    ap.add_argument("--week", type=int, default=1)
+    ap.add_argument("--week", type=int, default=None,
+                    help="default: the current NFL week")
     ap.add_argument("--no-ai", action="store_true")
     ap.add_argument("--wrcb", action="append", default=[],
                     help="URL or path to a WR/CB matchup chart image (repeatable)")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
-    sl = build_slate(args.draft, args.me, args.week)
+    sl = build_slate(args.draft, args.me, args.week or db.current_week())
     ps = posture(sl)
     ai = None if args.no_ai else ai_analyze(sl, ps, wrcb=args.wrcb)
     if args.json:

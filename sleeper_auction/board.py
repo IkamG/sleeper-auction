@@ -730,6 +730,21 @@ def start_job(job_id, work, render):
         return JOBS["items"][job_id]
 
 
+def current_week(q=None):
+    """?week= when given, else the current NFL week from Sleeper's state/nfl
+    (clamped to 1-18, so preseason reads as week 1). Pages used to default to
+    week 1 all season."""
+    w = (q or {}).get("week")
+    if w and str(w).isdigit():
+        return int(w)
+    try:
+        from sleeper_auction import sleeper as sd
+        st = sd.nfl_state() or {}
+        return max(1, min(18, int(st.get("display_week") or st.get("week") or 1)))
+    except Exception:
+        return 1
+
+
 def ensure_pool():
     with POOL["lock"]:
         if POOL["players"] is None:
@@ -883,13 +898,13 @@ class H(BaseHTTPRequestHandler):
                     return self._send(400, json.dumps(
                         {"error": "need draft id and roster id (?draft=..&me=..)"}))
                 from sleeper_auction import waivers
-                wb = waivers.build_board(did, int(rid), int(q.get("week") or 1),
+                wb = waivers.build_board(did, int(rid), current_week(q),
                                          int(q.get("limit") or 25))
                 job = None
                 ai = None
                 if not q.get("noai"):
                     rf = bool(q.get("refresh"))
-                    jid = "wv-%s-%s-%s" % (did, rid, q.get("week") or 1)
+                    jid = "wv-%s-%s-%s" % (did, rid, current_week(q))
                     if rf:
                         with JOBS["lock"]:
                             JOBS["items"].pop(jid, None)
@@ -910,7 +925,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(
                     200, waivers.html_report(
                         wb, ai,
-                        job_id=("wv-%s-%s-%s" % (did, rid, q.get("week") or 1))
+                        job_id=("wv-%s-%s-%s" % (did, rid, current_week(q)))
                         if job and job["status"] == "pending" else None),
                     "text/html; charset=utf-8")
             if path in ("/sitstart", "/api/sitstart"):
@@ -920,7 +935,7 @@ class H(BaseHTTPRequestHandler):
                     return self._send(400, json.dumps(
                         {"error": "need draft id and roster id (?draft=..&me=..)"}))
                 import sleeper_auction.sitstart as sitstart
-                wk = int(q.get("week") or 1)
+                wk = current_week(q)
                 sl = sitstart.build_slate(did, int(rid), wk)
                 ps = sitstart.posture(sl)
                 import urllib.parse as _up
