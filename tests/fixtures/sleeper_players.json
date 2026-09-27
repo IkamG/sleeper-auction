@@ -107,17 +107,11 @@
 "8130": {
 "player_id": "8130",
 "full_name": "Trey McBride",
-"first_name": "Trey",
-"last_name": "McBride",
 "position": "TE",
 "team": "ARI",
 "active": true,
 "gsis_id": null,
-"espn_id": null,
-"yahoo_id": null,
-"rotowire_id": 15902,
-"kalshi_id": "08088c13-d5a5-4a23-892c-762d822c037b",
-"sportradar_id": "734d54cc-c869-4e2f-a60f-c59c493f5110"
+"espn_id": null
 },
 "9509": {
 "player_id": "9509",
@@ -263,5 +257,212 @@
 "team": null,
 "active": false,
 "gsis_id": "00-0099005"
+},
+"13287": {
+"player_id": "13287",
+"full_name": "Jeremiyah Love",
+"position": "RB",
+"team": "ARI",
+"active": true,
+"gsis_id": null,
+"espn_id": null
+},
+"13500": {
+"player_id": "13500",
+"full_name": "Jadon Canady",
+"position": "CB",
+"team": "KC",
+"active": true,
+"gsis_id": null,
+"espn_id": null
+},
+"12672": {
+"player_id": "12672",
+"full_name": "Jeffrey Bassa",
+"position": "LB",
+"team": "KC",
+"active": true,
+"gsis_id": null,
+"espn_id": null
+},
+"11628": {
+"player_id": "11628",
+"full_name": "Marvin Harrison",
+"position": "WR",
+"team": "ARI",
+"active": true,
+"gsis_id": null,
+"espn_id": null
+},
+"11693": {
+"player_id": "11693",
+"full_name": "Max Melton",
+"position": "DB",
+"team": "ARI",
+"active": true,
+"gsis_id": null,
+"espn_id": null
+},
+"11744": {
+"player_id": "11744",
+"full_name": "Dadrion Taylor-Demerson",
+"position": "DB",
+"team": "ARI",
+"active": true,
+"gsis_id": null,
+"espn_id": null
+},
+"11728": {
+"player_id": "11728",
+"full_name": "Jaden Hicks",
+"position": "DB",
+"team": "KC",
+"active": true,
+"gsis_id": null,
+"espn_id": null
+},
+"10229": {
+"player_id": "10229",
+"full_name": "Rashee Rice",
+"position": "WR",
+"team": "KC",
+"active": true,
+"gsis_id": null,
+"espn_id": null
+},
+"10232": {
+"player_id": "10232",
+"full_name": "Michael Wilson",
+"position": "WR",
+"team": "ARI",
+"active": true,
+"gsis_id": null,
+"espn_id": null
+},
+"10872": {
+"player_id": "10872",
+"full_name": "Felix Anudike-Uzomah",
+"position": "DE",
+"team": "KC",
+"active": true,
+"gsis_id": null,
+"espn_id": null
+},
+"10932": {
+"player_id": "10932",
+"full_name": "Garrett Williams",
+"position": "DB",
+"team": "ARI",
+"active": true,
+"gsis_id": null,
+"espn_id": null
+},
+"10949": {
+"player_id": "10949",
+"full_name": "Chamarri Conner",
+"position": "DB",
+"team": "KC",
+"active": true,
+"gsis_id": null,
+"espn_id": null
+},
+"8132": {
+"player_id": "8132",
+"full_name": "Tyler Allgeier",
+"position": "RB",
+"team": "ARI",
+"active": true,
+"gsis_id": null,
+"espn_id": null
+},
+"8122": {
+"player_id": "8122",
+"full_name": "Zonovan Knight",
+"position": "RB",
+"team": "ARI",
+"active": true,
+"gsis_id": null,
+"espn_id": null
+},
+"8710": {
+"player_id": "8710",
+"full_name": "Jack Cochrane",
+"position": "LB",
+"team": "KC",
+"active": true,
+"gsis_id": null,
+"espn_id": null
+},
+"7799": {
+"player_id": "7799",
+"full_name": "Roy Lopez",
+"position": "DT",
+"team": "ARI",
+"active": true,
+"gsis_id": null,
+"espn_id": null
+},
+"7117": {
+"player_id": "7117",
+"full_name": "L'Jarius Sneed",
+"position": "CB",
+"team": "KC",
+"active": true,
+"gsis_id": null,
+"espn_id": 4040432
+},
+"6131": {
+"player_id": "6131",
+"full_name": "Mack Wilson",
+"position": "LB",
+"team": "ARI",
+"active": true,
+"gsis_id": " 00-0035144",
+"espn_id": 4040983
+},
+"4999": {
+"player_id": "4999",
+"full_name": "Josh Sweat",
+"position": "DE",
+"team": "ARI",
+"active": true,
+"gsis_id": "00-0034381",
+"espn_id": 3693166
+},
+"4046": {
+"player_id": "4046",
+"full_name": "Patrick Mahomes",
+"position": "QB",
+"team": "KC",
+"active": true,
+"gsis_id": "00-0033873",
+"espn_id": 3139477
+},
+"4454": {
+"player_id": "4454",
+"full_name": "Kendrick Bourne",
+"position": "WR",
+"team": "ARI",
+"active": true,
+"gsis_id": "00-0033307",
+"espn_id": 3045523
+},
+"3257": {
+"player_id": "3257",
+"full_name": "Jacoby Brissett",
+"position": "QB",
+"team": "ARI",
+"active": true,
+"gsis_id": "00-0033119",
+"espn_id": 2578570
+},
+"3558": {
+"player_id": "3558",
+"full_name": "Chris Jones",
+"position": "DT",
+"team": "KC",
+"active": true,
+"gsis_id": "00-0032762",
+"espn_id": 3044859
 }
 }

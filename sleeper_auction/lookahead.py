@@ -35,6 +35,13 @@ WORKHORSE_SNAP = 0.62
 COMMITTEE_SNAP = 0.50
 MIN_TOUCHES = 20          # below this, efficiency is noise, not signal
 
+# nflverse usage tags (feeds/nflverse.py). All need two games or more.
+RISING_TGT_PP = 8.0       # target share up 8+ points, last 3 vs season
+RISING_MIN_TGT_PG = 4.0
+BUY_LOW_DIFF = -3.0       # scoring 3+ pts/g under expected from opportunity
+SELL_HIGH_DIFF = 4.0      # scoring 4+ pts/g over expected...
+SELL_HIGH_GAMES = 3       # ...over three games, and touchdown-driven
+
 
 def season_stats(season, positions=("QB", "RB", "WR", "TE")):
     """Season-long counting stats, used to derive per-touch efficiency."""
@@ -90,9 +97,35 @@ def efficiency(season=None, min_weeks_current=3):
                 "td": (float(st.get("rush_td") or 0) + float(st.get("rec_td") or 0)),
             }
         if out:
+            _add_shares(out, src)
             return {"season": src, "players": out,
                     "weeks": played if src == sitstart.SEASON else 18}
     return {"season": None, "players": {}, "weeks": 0}
+
+
+def _add_shares(players, season):
+    """Target share and WOPR from nflverse, for the same season. Optional."""
+    try:
+        from sleeper_auction.feeds import nflverse
+        u = nflverse.usage(season).get("players") or {}
+    except Exception:
+        return
+    for pid, e in players.items():
+        x = u.get(pid)
+        if x:
+            e["tgt_share"] = x.get("tgt_share")
+            e["wopr"] = x.get("wopr")
+
+
+def usage_feeds():
+    """{usage, xfp} from nflverse for tags; {} when the feeds are down."""
+    try:
+        from sleeper_auction.feeds import common, nflverse
+    except Exception:
+        return {}
+    res, _ = common.parallel({"usage": lambda: nflverse.usage(),
+                              "xfp": lambda: nflverse.expected_points()}, timeout=45)
+    return res
 
 
 def _pct(values, v):
@@ -153,9 +186,32 @@ def backfield_map(index, eff):
     return out
 
 
-def classify(pid, info, e, gap, backfields, depth):
-    """Why this player is worth a bench spot, if he is."""
+def classify(pid, info, e, gap, backfields, depth, nfv=None, mine=False):
+    """Why this player is worth a bench spot, if he is.
+
+    `nfv` carries nflverse usage/xfp for this player ({"usage", "xfp"});
+    `mine` enables sell-high, which only makes sense for a player you own.
+    """
     tags, why = [], []
+    u = (nfv or {}).get("usage") or {}
+    x = (nfv or {}).get("xfp") or {}
+    if ((u.get("games") or 0) >= 2 and (u.get("trend_tgt") or 0) >= RISING_TGT_PP
+            and (u.get("targets_recent_pg") or 0) >= RISING_MIN_TGT_PG):
+        tags.append("rising-share")
+        why.append("target share %d%% over the last %d games against %d%% on the season"
+                   % (round(100 * (u.get("tgt_share_recent") or 0)), min(3, u["games"]),
+                      round(100 * (u.get("tgt_share") or 0))))
+    if (x.get("games") or 0) >= 2 and x.get("diff_pg") is not None:
+        if x["diff_pg"] <= BUY_LOW_DIFF:
+            tags.append("buy-low")
+            why.append("expected %.1f pts/g from his opportunities but scoring %.1f -- "
+                       "the role is better than the results" % (x["xfp_pg"], x["fp_pg"]))
+        elif (mine and x["diff_pg"] >= SELL_HIGH_DIFF and x["games"] >= SELL_HIGH_GAMES
+              and (x.get("td_pg") or 0) > (x.get("xtd_pg") or 0) + 0.3):
+            tags.append("sell-high")
+            why.append("scoring %.1f pts/g on opportunity worth %.1f, driven by %.1f TD/g "
+                       "against %.1f expected -- touchdown luck that regresses"
+                       % (x["fp_pg"], x["xfp_pg"], x["td_pg"], x["xtd_pg"]))
     pos = db.npos(info.get("pos"))
     team = info.get("team")
     d = depth.get(pid) or {}
@@ -229,11 +285,22 @@ def stash_board(draft_id, roster_id, limit=20):
     for pl in pool:
         if pl.get("team") and pl.get("bye"):
             team_bye.setdefault(pl["team"], pl["bye"])
+    try:        # fills teams the draft pool has no bye for (from the schedule)
+        from sleeper_auction.feeds import nflverse
+        for t, w in nflverse.byes().items():
+            if w:
+                team_bye.setdefault(t, w)
+    except Exception:
+        pass
     eff = efficiency()
     gaps = opportunity_gaps(eff, index)
     depth = sitstart.depth_charts()
     backfields = backfield_map(index, eff)
     trend = waivers.trending("add")
+    fd = usage_feeds()
+
+    def nfv(pid):
+        return {"usage": sitstart._usage_view(fd, pid), "xfp": sitstart._xfp_view(fd, pid)}
 
     cands = []
     for pid, info in index.items():
@@ -243,7 +310,7 @@ def stash_board(draft_id, roster_id, limit=20):
             continue
         e = eff["players"].get(pid)
         g = gaps.get(pid)
-        tags, why = classify(pid, info, e, g, backfields, depth)
+        tags, why = classify(pid, info, e, g, backfields, depth, nfv(pid))
         if not tags:
             continue
         base = byid.get(pid) or {}
@@ -259,6 +326,8 @@ def stash_board(draft_id, roster_id, limit=20):
                  + (0.5 if "rookie" in tags else 0)
                  + (1.1 if "rookie-in-line" in tags else 0)
                  + (0.5 if "red-zone role" in tags else 0)
+                 + (0.8 if "rising-share" in tags else 0)
+                 + (0.6 if "buy-low" in tags else 0)
                  + 0.4 * (trend.get(pid, {}).get("share") or 0)
                  - age_pen)
         cands.append({
@@ -271,7 +340,7 @@ def stash_board(draft_id, roster_id, limit=20):
             "season_value": base.get("base"),
             "bye": base.get("bye") or team_bye.get(info["team"]),
             "tags": tags, "why": why,
-            "gap": g, "eff": e,
+            "gap": g, "eff": e, **{k: v for k, v in nfv(pid).items() if v},
             "adds_24h": (trend.get(pid) or {}).get("count"),
             "score": round(score, 3)})
     cands.sort(key=lambda c: -c["score"])
@@ -292,7 +361,12 @@ def stash_board(draft_id, roster_id, limit=20):
                      "season_value": base.get("base"),
                      "injury_status": info.get("injury_status"),
                      "eff": eff["players"].get(pid),
-                     "gap": gaps.get(pid)})
+                     "gap": gaps.get(pid),
+                     **{k: v for k, v in nfv(pid).items() if v}})
+        # Usage tags only: an empty info/role context yields nothing else.
+        t, w = classify(pid, {}, None, None, {}, {}, nfv(pid), mine=True)
+        if t:
+            mine[-1]["tags"], mine[-1]["why"] = t, w
     byes = {}
     for m in mine:
         if m.get("bye"):
@@ -311,6 +385,8 @@ def stash_board(draft_id, roster_id, limit=20):
             "team_name": next((t["owner"] for t in state["teams"]
                                if t["roster_id"] == roster_id), "me"),
             "stats_season": eff["season"], "stats_weeks": eff["weeks"],
+            "feed_sources": {k: {"season": v.get("season"), "weeks": v.get("weeks")}
+                             for k, v in fd.items() if isinstance(v, dict)},
             "my_roster": mine,
             "bye_clusters": sorted(
                 ({"week": w, "players": p, "count": len(p)}
@@ -400,6 +476,16 @@ confidence by construction -- do not manufacture a case from a draft slot the \
 payload does not contain.
 - "red-zone role": scoring chances without volume; touchdown-dependent and \
 volatile.
+- "rising-share": his share of team targets over the last three games is 8+ \
+points above his season share, on real volume. Usage leads production; this \
+is the earliest public sign of a role change. Two games is a hint.
+- "buy-low": expected points from the quality of his opportunities ("xfp") \
+run well ahead of what he has scored. The role is better than the results.
+- "sell-high" (your own roster only): he is scoring well above his expected \
+points and it is touchdowns doing it. Touchdown rate regresses; name it as a \
+weak point even while he is producing.
+- "usage" (target share, WOPR) and "xfp" (expected vs actual points per game) \
+are from nflverse; "feed_sources" says which season and how many weeks.
 
 Be honest about what a stash costs. A bench spot is a real price in a 13-man \
 roster, and most stashes never pay. Rank ruthlessly, recommend few, and name \
@@ -420,6 +506,7 @@ def ai_analyze(board, api_key=None, refresh=False):
         "stats_season": board["stats_season"], "stats_weeks": board["stats_weeks"],
         "bye_clusters": board["bye_clusters"],
         "thin_positions": board["thin_positions"],
+        "feed_sources": board.get("feed_sources"),
         "my_roster": [{k: v for k, v in m.items() if k != "sleeper_id"}
                       for m in board["my_roster"]],
         "candidates": [{k: v for k, v in c.items() if k != "sleeper_id"}
@@ -559,6 +646,7 @@ def html_report(b, ai=None, job_id=None):
         cards = sitstart.PENDING_PANEL + (sitstart.POLL_JS % json.dumps(job_id))
     return LA_TPL.replace("__ROWS__", rows).replace("__THIN__", thin) \
         .replace("__BYES__", byes).replace("__AI__", cards) \
+        .replace("__DATA__", sitstart._data_panel()) \
         .replace("__TEAM__", str(b["team_name"])) \
         .replace("__SEASON__", str(b["stats_season"])) \
         .replace("__WEEKS__", str(b["stats_weeks"]))
@@ -630,6 +718,7 @@ opportunity gap: how well a player performs per touch versus how often he is use
  <div class="rail"><div id="ai-slot">__AI__</div>
   <div class="panel"><h3>Thin positions</h3>__THIN__</div>
   <div class="panel"><h3>Bye clusters</h3>__BYES__</div>
+  __DATA__
  </div>
 </div></body></html>"""
 

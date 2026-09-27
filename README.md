@@ -66,14 +66,18 @@ Signals fed to the model:
 
 | Signal | Source | Why it matters |
 |---|---|---|
-| Implied team total | Vegas spread + O/U | The market's own forecast of how much offense exists to share |
+| Implied team total | Vegas spread + O/U (ESPN; nflverse schedule fills games ESPN has no line for) | The market's own forecast of how much offense exists to share |
 | Weekly projection | Sleeper, native half-PPR | The baseline |
 | Boom/bust profile | Last season's actual weekly scores | A projection is a mean; volatility says whether it's reliable |
 | Defense vs position | Computed from real results | A team total can't say "bad for a WR *specifically*" |
-| Snap share + trend | nflverse | The earliest sign a projection has gone stale |
+| Snap share + trend | nflverse, joined by PFR id | The earliest sign a projection has gone stale |
+| Target share, air-yards share, WOPR | nflverse weekly stats, recomputed from summed targets | For receivers a better usage read than snaps: on the field is not the same as targeted |
+| Practice trajectory | nflverse injury report + Sleeper, snapshotted through the week | DNP → LP → FP is on track; FP → LP late in the week is the worst sign in the data. Veteran rest days are labelled, not flagged |
+| Expected points (xFP) | ffopportunity | Points his opportunities were worth. Far above means touchdown luck due to regress; far below means the role is better than the results |
+| Red-zone and goal-line share | ffopportunity play-by-play | Where touchdowns come from |
 | Depth chart | Sleeper, live | Current team, current season — never stale |
 | Injuries | ESPN | Status, body part, expected return |
-| Weather | Open-Meteo | Wind above ~15 mph suppresses passing and kicking; domes short-circuit |
+| Weather | Open-Meteo, at kickoff (kickoff to +3 h) | Wind above ~15 mph suppresses passing and kicking. Roof comes from the nflverse schedule; neutral-site games (Rio, London, …) use the venue's own coordinates |
 | WR/CB matchup | Optional chart image | Per-receiver, against the cornerback projected to cover him |
 
 Defense-vs-position is **computed, not scraped**: every weekly score is
@@ -106,7 +110,10 @@ Ranks every unrostered player on three forces that pull against each other:
 - **Upside** — role evidence a weekly projection cannot see. Per-touch
   production against usage within the position (YPC for backs, YPT for
   receivers), whether a backfield has an owner, whether a rookie is already
-  top-2 on the depth chart, snap share. This is the half that wins leagues.
+  top-2 on the depth chart, snap share, and nflverse usage: a target share
+  up 8+ points over the last three games, a WOPR of 0.45+, expected points
+  3+ a game above what he has scored, goal-line work on a light role. Each
+  needs two games or more. This is the half that wins leagues.
 - **Quality** — his season-long auction value in the abstract. A genuinely
   valuable player is worth rostering even without a need.
 
@@ -176,13 +183,17 @@ Candidates are tagged by *why* they are worth a bench spot:
 | `open-committee` | No back on that team owns the job. Upside needs no injury. |
 | `rookie-in-line` | Rookie already first or second on the depth chart. |
 | `red-zone role` | Scoring chances without volume. Touchdown-dependent. |
+| `rising-share` | Target share up 8+ points over the last three games, on 4+ targets a game. Usage leads production. |
+| `buy-low` | Expected points from his opportunities run 3+ a game ahead of what he has scored. |
+| `sell-high` | Your roster only: scoring 4+ a game above expected over three games, driven by touchdowns. Named as a weak point while he is still producing. |
 
 Age is a direct discount — a stash is a bet on future value, and a 31-year-old
 career backup with a great per-touch rate has no career arc left for the role
 to arrive in. Players on IR or PUP are excluded.
 
 The rail shows **thin positions** (no bench cover) and **bye clusters**
-(several starters idle the same week).
+(several starters idle the same week). Every page's rail also has a small
+**Data** panel giving each feed's freshness.
 
 ### Draft board — `/board`
 
@@ -276,6 +287,7 @@ scripted caller wants the whole answer in one response.
         common.py     cached fetch (gunzip, stale-if-error), status, parallel, snapshots
         ids.py        ID crosswalk: gsis/espn/pfr/cbs/... -> Sleeper id
         scoring.py    league scoring_settings -> points(stat line)
+        nflverse.py   usage, snaps, practice, xFP, red zone, schedule (nflverse/ffverse)
     tests/            unittest, network-free (fixtures in tests/fixtures)
     run.sh            launcher; picks the best available interpreter
     cache/            on-disk HTTP cache (gitignored)
@@ -288,6 +300,7 @@ Every module runs standalone:
     python3 -m sleeper_auction.waivers  --draft <id> --me <n> --week <n> [--limit 25]
     python3 -m sleeper_auction.lookahead --draft <id> --me <n> [--limit 20]
     python3 -m sleeper_auction.feeds.ids --probe     # crosswalk sizes per id kind
+    python3 -m sleeper_auction.feeds.nflverse --probe --season 2026
 
 Tests (offline, stdlib `unittest`, run on Python 3.9 and 3.14):
 
@@ -365,6 +378,22 @@ different shapes and cadences. Rules every feed follows:
 - `FEEDS_DISABLED=props,news,...` switches feeds off (useful for checking the
   degraded path). There is no config file.
 
+| Feed | Source | Cache | Used for |
+|---|---|---|---|
+| Weekly player stats | nflverse `stats_player_week_<season>` | 6 h | target share, air-yards share, WOPR, aDOT, carry share |
+| Snap counts | nflverse `snap_counts_<season>` | 24 h | snap share by Sleeper id |
+| Injury report | nflverse `injuries_<season>` + Sleeper practice fields | 2 h Wed–Sat, else 12 h | practice trajectory, game designation |
+| Expected points | ffopportunity `ep_weekly_<season>` (full PPR, converted to league scoring) | 6 h | xFP, buy-low / sell-high |
+| Play-by-play | ffopportunity `ep_pbp_rush/pass_<season>` | 6 h | red-zone and goal-line share, team pass rate over expected |
+| Schedule | nflverse `games.csv` | 2 h | kickoff time, roof, neutral venues, fallback lines, bye weeks |
+
+nflverse publishes only the **latest** practice status per player-week, so
+the Wednesday → Friday trajectory is built by snapshotting each fetch into
+`cache/history/`. That history lives only on your machine, starts when the app
+first runs in a week, and is gone if `cache/` is cleared. Rates fall back to
+last season until the current one has two weeks, and every payload records
+which season it used.
+
 ---
 
 ## Valuation
@@ -401,8 +430,8 @@ league.
   used.
 - Rookies have no volatility history, so floor/ceiling read as unknown rather
   than being invented.
-- Weather uses the maximum wind across the forecast window rather than the wind
-  at kickoff, so it over-flags.
+- There is no routes-run data (no TPRR/YPRR) in any free feed. Snap share and
+  target share are the proxies.
 - WR/CB charts are partial by nature; unlisted receivers are reported unknown.
 - FAAB bids are derived from need, demand and positional scarcity, not from a
   published expert consensus. Two dedicated FAAB sites were evaluated:

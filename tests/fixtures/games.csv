@@ -1,0 +1,17 @@
+game_id,season,game_type,week,gameday,gametime,away_team,home_team,location,spread_line,total_line,roof,away_rest,home_rest,stadium_id,stadium
+2026_03_ATL_GB,2026,REG,3,2026-09-24,20:15,ATL,GB,Home,4.5,43.5,outdoors,4,4,GNB00,Lambeau Field
+2026_03_LAC_BUF,2026,REG,3,2026-09-27,13:00,LAC,BUF,Home,7,50.5,outdoors,7,10,BUF00,Highmark Stadium
+2026_03_CAR_CLE,2026,REG,3,2026-09-27,13:00,CAR,CLE,Home,-2.5,41.5,outdoors,7,7,CLE00,Huntington Bank Field
+2026_03_NYJ_DET,2026,REG,3,2026-09-27,13:00,NYJ,DET,Home,7,49.5,dome,7,10,DET00,Ford Field
+2026_03_HOU_IND,2026,REG,3,2026-09-27,13:00,HOU,IND,Home,-1.5,41.5,,7,7,IND00,Lucas Oil Stadium
+2026_03_NE_JAX,2026,REG,3,2026-09-27,13:00,NE,JAX,Home,3,46.5,outdoors,7,7,JAX00,EverBank Stadium
+2026_03_KC_MIA,2026,REG,3,2026-09-27,13:00,KC,MIA,Home,-10,45.5,outdoors,7,7,MIA00,Hard Rock Stadium
+2026_03_TEN_NYG,2026,REG,3,2026-09-27,13:00,TEN,NYG,Home,2.5,37.5,outdoors,7,6,NYC01,MetLife Stadium
+2026_03_CIN_PIT,2026,REG,3,2026-09-27,13:00,CIN,PIT,Home,-3.5,42.5,outdoors,7,7,PIT00,Acrisure Stadium
+2026_03_SEA_WAS,2026,REG,3,2026-09-27,13:00,SEA,WAS,Home,-8.5,40.5,outdoors,7,7,WAS00,Northwest Stadium
+2026_03_ARI_SF,2026,REG,3,2026-09-27,16:05,ARI,SF,Home,7.5,48.5,outdoors,7,7,SFO01,Levi's Stadium
+2026_03_MIN_TB,2026,REG,3,2026-09-27,16:05,MIN,TB,Home,-1.5,42.5,outdoors,7,7,TAM00,Raymond James Stadium
+2026_03_BAL_DAL,2026,REG,3,2026-09-27,16:25,BAL,DAL,Neutral,-3,53.5,,7,7,RIO00,Maracana Stadium
+2026_03_LV_NO,2026,REG,3,2026-09-27,16:25,LV,NO,Home,3.5,43.5,dome,7,7,NOR00,Caesars Superdome
+2026_03_LA_DEN,2026,REG,3,2026-09-27,20:20,LA,DEN,Home,-1.5,44.5,outdoors,6,7,DEN00,Empower Field at Mile High
+2026_03_PHI_CHI,2026,REG,3,2026-09-28,20:15,PHI,CHI,Home,-3.5,42.5,outdoors,8,8,CHI98,Soldier Field

@@ -93,6 +93,9 @@ def note(feed, **kw):
                                      "error": None})
         for k, v in kw.items():
             s[k] = redact(v) if isinstance(v, str) else v
+        if kw.get("cache_age_s") is not None:
+            s["as_of"] = time.strftime("%Y-%m-%dT%H:%MZ",
+                                       time.gmtime(time.time() - kw["cache_age_s"]))
         s["checked"] = int(time.time())
 
 
@@ -101,6 +104,9 @@ def ok(feed, rows=None, **kw):
 
 
 def fail(feed, err, **kw):
+    if isinstance(err, FeedDisabled):
+        note(feed, ok=None, error="disabled by FEEDS_DISABLED", **kw)
+        return
     note(feed, ok=False, error="%s: %s" % (type(err).__name__, redact(str(err)))
          if isinstance(err, BaseException) else redact(str(err)), **kw)
 
@@ -126,6 +132,11 @@ def cache_path(key):
 def cache_age(key):
     p = cache_path(key)
     return time.time() - os.path.getmtime(p) if os.path.exists(p) else None
+
+
+def _read(p):
+    with open(p, encoding="utf-8") as f:
+        return f.read()
 
 
 def _decode(raw, ce=None):
@@ -159,7 +170,7 @@ def fetch_text(url, key, ttl, headers=None, stale_ok=True, feed=None, data=None,
     if age is not None and age < ttl:
         if feed:
             note(feed, cache_age_s=int(age), stale=False)
-        txt = open(p, encoding="utf-8").read()
+        txt = _read(p)
         return (txt, {}) if want_headers else txt
     try:
         txt, hdrs = _request(url, headers, data, timeout)
@@ -168,7 +179,7 @@ def fetch_text(url, key, ttl, headers=None, stale_ok=True, feed=None, data=None,
             if feed:
                 note(feed, stale=True, cache_age_s=int(age),
                      error="live fetch failed, serving stale cache: %s" % redact(str(e)))
-            txt = open(p, encoding="utf-8").read()
+            txt = _read(p)
             return (txt, {}) if want_headers else txt
         raise type(e)(redact(str(e))) if isinstance(e, (ValueError, OSError)) and \
             not isinstance(e, urllib.error.HTTPError) else e
@@ -213,7 +224,7 @@ def fetch_csv(urls, key, ttl, feed=None, stale_ok=True, timeout=90):
         if feed:
             note(feed, stale=True, cache_age_s=int(cache_age(key)),
                  error="live fetch failed, serving stale cache: %s" % redact(str(last)))
-        return parse_csv(open(cache_path(key), encoding="utf-8").read())
+        return parse_csv(_read(cache_path(key)))
     raise last
 
 

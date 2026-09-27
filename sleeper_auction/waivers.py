@@ -54,6 +54,21 @@ SKILL_POS = ("RB", "WR", "TE")
 # number" with "player worth a claim".
 BOARD_CAP = {"TE": 4, "QB": 2}
 
+# Usage upside from nflverse (feeds/nflverse.py). Each is gated on sample size:
+# a share over one game is a box score, not a role.
+RISE_TGT_PP = 8.0        # target share up this many points, last 3 vs season
+RISE_MIN_TGT_PG = 4.0    # ...on at least this many targets a game recently
+RISE_UPSIDE = 1.5
+WOPR_ROLE = 0.45         # weighted opportunity: a real receiving role
+WOPR_UPSIDE = 1.0
+UNLUCKY_DIFF = -3.0      # scoring 3+ pts/g under his opportunity quality
+UNLUCKY_UPSIDE = 1.0
+GL_CARRIES = 2           # goal-line carries (inside the 5)...
+RZ_SHARE = 0.30          # ...or this share of team red-zone chances
+GL_MAX_CARRY_SHARE = 0.5  # ...on a light overall role
+GL_UPSIDE = 0.8
+MIN_GAMES = 2
+
 # FAAB bands, as a share of the season budget. These are the shapes the
 # fantasy community converges on; demand and need move a player between bands.
 FAAB_BANDS = [
@@ -259,6 +274,26 @@ def score_candidate(fa, mine, flex_bar, league, trend, role=None):
             # for the position, or the tag describes half the league.
             upside += 1.0
             drivers.append("red-zone work on a light role")
+        u = r.get("usage") or {}
+        x = r.get("xfp") or {}
+        z = r.get("redzone") or {}
+        games = u.get("games") or 0
+        if (games >= MIN_GAMES and (u.get("trend_tgt") or 0) >= RISE_TGT_PP
+                and (u.get("targets_recent_pg") or 0) >= RISE_MIN_TGT_PG):
+            upside += RISE_UPSIDE
+            drivers.append("target share up %d pts over last 3" % round(u["trend_tgt"]))
+        if games >= MIN_GAMES and (u.get("wopr") or 0) >= WOPR_ROLE:
+            upside += WOPR_UPSIDE
+            drivers.append("WOPR %.2f" % u["wopr"])
+        if (x.get("games") or 0) >= MIN_GAMES and x.get("diff_pg") is not None \
+                and x["diff_pg"] <= UNLUCKY_DIFF:
+            upside += UNLUCKY_UPSIDE
+            drivers.append("xFP says the role is %.1f pts/g better than results"
+                           % -x["diff_pg"])
+        if ((z.get("gl_carries") or 0) >= GL_CARRIES or (z.get("rz_share") or 0) >= RZ_SHARE) \
+                and (u.get("carry_share") or 0) < GL_MAX_CARRY_SHARE and games >= MIN_GAMES:
+            upside += GL_UPSIDE
+            drivers.append("goal-line work on a light role")
         snap = e.get("snap_share")
         if snap and snap >= 0.55:
             # Being on the field is table stakes, not a thesis -- it separates
@@ -337,6 +372,28 @@ def faab_bid(cand, budget_left, league):
 
 # ------------------------------------------------------------------ board
 
+def _nflverse(league_id):
+    """{usage, xfp, redzone} from feeds.nflverse, fetched together; {} if down."""
+    try:
+        from sleeper_auction.feeds import common, nflverse, scoring
+    except Exception:
+        return {}
+    tasks = {}
+    if common.enabled("nflverse.usage"):
+        tasks["usage"] = lambda: nflverse.usage()
+    if common.enabled("ffopportunity.ep"):
+        tasks["xfp"] = lambda: nflverse.expected_points(
+            rec_value=scoring.rec_value(scoring.league_scoring(league_id)))
+    if common.enabled("ffopportunity.pbp"):
+        tasks["redzone"] = lambda: nflverse.redzone()
+    res, errs = common.parallel(tasks, timeout=45)
+    for k, e in errs.items():
+        sys.stderr.write("waivers: %s unavailable (%s)\n" % (k, e))
+    res["_sources"] = {k: {"season": v.get("season"), "weeks": v.get("weeks")}
+                       for k, v in res.items() if isinstance(v, dict)}
+    return res
+
+
 def build_board(draft_id, roster_id, week, limit=25):
     """Assemble free agents, my needs, demand and suggested bids. No LLM."""
     pool = db.value_pool(db.build_pool()[0])
@@ -378,6 +435,15 @@ def build_board(draft_id, roster_id, week, limit=25):
         roles = {}
         sys.stderr.write("waivers: role data unavailable (%s)\n" % exc)
 
+    # Usage, expected points and red-zone share from nflverse. Optional: with
+    # the feed down every candidate scores exactly as before.
+    fd = _nflverse(league_id)
+    for pid in set(roles) | set((fd.get("usage") or {}).get("players") or {}):
+        v = {"usage": sitstart._usage_view(fd, pid), "xfp": sitstart._xfp_view(fd, pid),
+             "redzone": sitstart._rz_view(fd, pid)}
+        if any(v.values()):
+            roles.setdefault(pid, {"tags": (), "gap": None, "eff": None}).update(v)
+
     def enrich(pid, p):
         team = p.get("team")
         ln = lines.get(team) or {}
@@ -387,6 +453,9 @@ def build_board(draft_id, roster_id, week, limit=25):
                 "wk_proj": (wk.get(pid) or {}).get("proj"),
                 "opponent": ln.get("opp"), "implied_total": ln.get("implied"),
                 "depth": depth.get(pid), "injury": inj.get(db.nname(p["name"])),
+                "usage": (roles.get(pid) or {}).get("usage"),
+                "xfp": (roles.get(pid) or {}).get("xfp"),
+                "redzone": (roles.get(pid) or {}).get("redzone"),
                 "rostered": pid in taken}
 
     mine_ids = by_roster.get(roster_id) or []
@@ -470,6 +539,7 @@ def build_board(draft_id, roster_id, week, limit=25):
             "candidates": cands[:limit], "streamers": streamers,
             "dropped": [{"id": k, **v} for k, v in list(dropped.items())[:10]],
             "free_agent_count": len(cands),
+            "feed_sources": fd.get("_sources"),
             "news": reddit_posts()}
 
 
@@ -527,6 +597,15 @@ gets and does not get many, which is a coaching decision that can reverse. \
 pays only if the starter misses time, rookie-in-line is already top-2 on the \
 depth chart. "snap_share" says whether he is on the field. THIS is the half \
 that wins leagues; need only describes this Sunday.
+  Usage drivers from nflverse also feed upside, each gated on at least two \
+games: a target share up 8+ points over the last three games on 4+ targets a \
+game ("usage.trend_tgt"); a WOPR of 0.45 or more ("usage.wopr", 1.5 x target \
+share + 0.7 x air-yards share: a real receiving role); an "xfp.diff_pg" of -3 \
+or worse (he has scored 3+ points a game less than the quality of his \
+opportunities predicts -- the role is better than the results, which is the \
+buy); and goal-line work on a light overall role ("redzone.gl_carries", \
+"redzone.rz_share"). "feed_sources" says which season and how many weeks \
+those came from. Two games of a share is a hint; say so.
 - QUALITY is "season_value": his auction value in the abstract. A genuinely \
 valuable player is worth rostering even without a need, because rosters churn \
 and good players win leagues.
@@ -580,6 +659,7 @@ def ai_analyze(board, api_key=None, refresh=False):
                        ("name", "pos", "wk_proj", "need_delta", "replaces")}
                       for c in board.get("streamers", [])],
         "news": [n["title"] for n in board["news"][:25]],
+        "feed_sources": board.get("feed_sources"),
     }, default=str)
     key = "waivers-%s-w%s" % (board.get("roster_id"), board.get("week"))
     return sitstart.cached_ai(
@@ -728,6 +808,7 @@ def html_report(b, ai=None, job_id=None):
         .replace("__ROWS__", rows).replace("__NEEDS__", needs) \
         .replace("__STREAM__", streamers) \
         .replace("__NEWS__", news).replace("__AI__", cards) \
+        .replace("__DATA__", sitstart._data_panel()) \
         .replace("__TEAM__", str(b["team_name"])).replace("__WK__", str(b["week"])) \
         .replace("__N__", str(b["free_agent_count"])) \
         .replace("__BUD__", ("$%d" % b["faab_budget"]) if b.get("faab_budget") else "unknown") \
@@ -802,6 +883,7 @@ document.querySelectorAll('.nav a').forEach(function(a){a.href=a.dataset.p+qs;
    about to change.</div></div>
   <div class="panel"><h3>Roster needs</h3>__NEEDS__</div>
   <div class="panel"><h3>r/fantasyfootball</h3>__NEWS__</div>
+  __DATA__
  </div>
 </div></body></html>"""
 

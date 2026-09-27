@@ -40,7 +40,7 @@ class CommonTest(unittest.TestCase):
             rows = common.fetch_csv(["http://x/f.csv.gz"], "t-gz", 60)
         self.assertEqual(rows, [{"a": "1", "b": "2"}])
         # cached decompressed
-        self.assertEqual(open(common.cache_path("t-gz")).read(), "a,b\n1,2\n")
+        self.assertEqual(common._read(common.cache_path("t-gz")), "a,b\n1,2\n")
 
     def test_double_gzip(self):
         body = gzip.compress(gzip.compress(b"x"))

@@ -1,15 +1,12 @@
-import csv
-import json
-import os
 import unittest
 
-from _path import FIX
+from _path import jload, rows
 from sleeper_auction.feeds import ids
 
 
 def _cw():
-    slp = json.load(open(os.path.join(FIX, "sleeper_players.json")))
-    dp = list(csv.DictReader(open(os.path.join(FIX, "dp_playerids.csv"))))
+    slp = jload("sleeper_players.json")
+    dp = rows("dp_playerids.csv")
     return ids.build(slp, dp)
 
 
