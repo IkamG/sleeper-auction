@@ -825,6 +825,17 @@ def build_slate(draft_id, roster_id, week):
             pl["vs_proj"] = None
             pl["vs_proj_pct"] = None
     phase = week_phase(players, gs)
+    if phase == "post":
+        # Which signals actually predicted it: every source's error for my
+        # players this week, from the pre-kickoff snapshots (feeds/calibrate).
+        try:
+            from sleeper_auction.feeds import calibrate
+            ce = calibrate.week_errors(SEASON, week, [p["id"] for p in players])
+            for pl in players:
+                if ce.get(str(pl["id"])):
+                    pl["source_errors"] = ce[str(pl["id"])]
+        except Exception:
+            pass
     started = [p for p in players if p["starting"]]
     locked_pts = round(sum(p["actual"] or 0 for p in started if p["locked"]), 1)
     for pl in players:
@@ -1116,7 +1127,10 @@ a deficit argues for ceiling, more sharply than before kickoff because there \
 are fewer games left to make it up.
 - "post": every game is done. No verdicts to give. Write the retrospective: who \
 beat their projection and who missed, which of the pre-game signals actually \
-predicted it, and which misled. Be specific about what was knowable in advance \
+predicted it, and which misled. "source_errors", where present, is each \
+source's pre-kickoff projection minus what he actually scored (sleeper, \
+consensus, props, final, and each site as "src:<name>"), so "which signal \
+was right" is answered from data rather than narrative. Be specific about what was knowable in advance \
 versus what was variance -- most single-week misses are variance, and saying so \
 is more honest than inventing a narrative.
 

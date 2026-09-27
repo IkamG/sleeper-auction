@@ -36,7 +36,7 @@ OFFENSE = set(HALF_PPR) | {"bonus_rec_te", "bonus_rec_rb", "bonus_rec_wr",
 
 def league_scoring(league_id):
     """scoring_settings for the league (1 day TTL); HALF_PPR on failure."""
-    if not league_id:
+    if not league_id or not common.enabled("league.scoring"):
         return dict(HALF_PPR)
     try:
         lg = common.fetch_json("https://api.sleeper.app/v1/league/%s" % league_id,

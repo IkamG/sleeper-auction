@@ -1192,6 +1192,12 @@ if __name__ == "__main__":
         # Slow in-season feeds (projection scrapers, FantasyPros ECR) refresh
         # on a daemon thread; pages only ever read their cache.
         from sleeper_auction.feeds import prefetch
+        if ARGS.draft:
+            try:
+                prefetch.LEAGUE_ID = (draft_state(ARGS.draft).get("draft") or {}).get(
+                    "league_id")
+            except Exception:
+                pass
         prefetch.start()
     except Exception as e:
         print("  prefetch not started: %s" % e)

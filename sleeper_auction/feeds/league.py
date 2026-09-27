@@ -17,6 +17,8 @@ API = "https://api.sleeper.app/v1/league/%s"
 
 
 def _league(league_id):
+    if not common.enabled("league"):
+        raise common.FeedDisabled("league")
     return common.fetch_json(API % league_id, "slp-league-%s" % league_id, 3600,
                              feed="league.settings")
 

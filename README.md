@@ -312,6 +312,7 @@ scripted caller wants the whole answer in one response.
         news.py       ESPN per-player news (RotoWire), RotoWire RSS
         values.py     FantasyCalc, KeepTradeCut (opt-in), FantasyPros ROS, ROS points, SOS
         league.py     real FAAB remaining, waiver history, the room's prices
+        calibrate.py  scores every source against actual points; fits the blend
     tests/            unittest, network-free (fixtures in tests/fixtures)
     run.sh            launcher; picks the best available interpreter
     cache/            on-disk HTTP cache (gitignored)
@@ -328,6 +329,7 @@ Every module runs standalone:
     python3 -m sleeper_auction.feeds.props --probe --week N  # series, joins, coverage
     python3 -m sleeper_auction.feeds.props.implied --fit     # refit prop distribution constants
     python3 -m sleeper_auction.feeds.projections --probe --week N  # rows, join rate, fetch time
+    python3 -m sleeper_auction.feeds.calibrate --season 2026       # MAE by source, fit weights
 
 Tests (offline, stdlib `unittest`, run on Python 3.9 and 3.14):
 
@@ -448,6 +450,24 @@ the Wednesday → Friday trajectory is built by snapshotting each fetch into
 first runs in a week, and is gone if `cache/` is cleared. Rates fall back to
 last season until the current one has two weeks, and every payload records
 which season it used.
+
+### Calibration
+
+The blend weights are a starting guess, so the app keeps score. Through the
+week the background thread snapshots every player's pre-kickoff lines
+(Sleeper, each consensus source, the consensus, the props mean and the final
+number) into `cache/history/`. Once a week is complete,
+
+    python3 -m sleeper_auction.feeds.calibrate --season 2026
+
+compares each against what players actually scored (league scoring, players
+who played), prints mean absolute error and bias by source and position, fits
+the props weight by grid search, and writes `cache/calibration.json`. With
+four or more weeks in it, the blend uses the fitted weight instead of the
+chosen 0.55, and the page says which it is using. The post-week retrospective
+also receives each source's error for your players, so "which signal was
+right" is answered from data. The history is local to your machine: clear
+`cache/` and it starts again.
 
 ### Weekly projection sources
 

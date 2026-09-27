@@ -110,6 +110,8 @@ def ros_points(season, from_week, sc=None, cache_only=True, season_proj=None):
     is there), else FanDuel REMAINING, else season_proj * weeks / 17.
     """
     from sleeper_auction.feeds import scoring
+    if not common.enabled("values.ros"):
+        raise common.FeedDisabled("values.ros")
     weeks = list(range(int(from_week), LAST_FANTASY_WEEK + 1))
     out, got = {}, 0
     for w in weeks:

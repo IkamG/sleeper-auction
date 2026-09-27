@@ -23,6 +23,8 @@ from sleeper_auction.feeds import common
 
 TICK = 600
 _LOCK = threading.Lock()
+LEAGUE_ID = None          # set by board.main from the draft, for league scoring
+_REC = {"at": 0}
 _KICKED = {}
 KICK_EVERY = 600
 _STARTED = {"thread": None}
@@ -153,6 +155,16 @@ def tick():
             refresh(season, w)
     if time.time() - _load().get("ros-%s" % season, 0) >= ROS_EVERY:
         refresh_ros(season, week + 1)
+    # Calibration history: the last snapshot before each kickoff is the line
+    # that gets scored. Every tick on game days, hourly otherwise.
+    gameday = _et_now().weekday() in (0, 3, 6)
+    if gameday or time.time() - _REC["at"] >= 3600:
+        try:
+            from sleeper_auction.feeds import calibrate
+            calibrate.record(season, week, LEAGUE_ID)
+            _REC["at"] = time.time()
+        except Exception as e:
+            common.fail("calibrate", e)
 
 
 
