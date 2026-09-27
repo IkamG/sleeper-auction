@@ -486,11 +486,14 @@ def _start_feeds(week, nteam, league_id=None):
         "ctx": lambda: nflverse.efficiency_ctx(),
         "props": lambda: _props_mod().week_props(SEASON, week),
         "scoring": lambda: scoring.league_scoring(league_id),
+        "consensus": lambda: _consensus(week, league_id),
+        "ecr": lambda: _projections().week_ecr(cache_only=True),
     }
     names = {"usage": "nflverse.usage", "practice": "nflverse.injuries",
              "xfp": "ffopportunity.ep", "redzone": "ffopportunity.pbp",
              "schedule": "nflverse.schedule", "ctx": "nflverse.ngs",
-             "props": "props", "scoring": "league.scoring"}
+             "props": "props", "scoring": "league.scoring",
+             "consensus": "projections", "ecr": "fantasypros.week"}
     tasks = {k: v for k, v in tasks.items() if common.enabled(names[k])}
     from concurrent.futures import ThreadPoolExecutor
     ex = ThreadPoolExecutor(max_workers=max(1, len(tasks)))
@@ -515,6 +518,11 @@ def _start_feeds(week, nteam, league_id=None):
         if out.get("props"):
             src["props"] = {"as_of": out["props"].get("as_of"),
                             "players": len(out["props"].get("players") or {})}
+        if out.get("consensus"):
+            src["consensus"] = {"sources": out["consensus"].get("sources"),
+                                "week": out["consensus"].get("week")}
+        if out.get("ecr"):
+            src["fantasypros_ecr"] = {"week": out["ecr"].get("week")}
         if out.get("xfp"):
             src["xfp"]["scoring_rec"] = out["xfp"].get("scoring_rec")
         out["_sources"] = src
@@ -527,35 +535,54 @@ def _props_mod():
     return props
 
 
-# Provisional blend until the consensus layer exists (Phase 3): half market,
-# half Sleeper, and only when markets price most of the projection. Chosen,
-# not fitted -- Phase 5 calibration replaces it.
-PROPS_BLEND_W = 0.5
-PROPS_MIN_COVERAGE = 0.7
+def _projections():
+    from sleeper_auction.feeds import projections
+    return projections
+
+
+def _consensus(week, league_id):
+    """Consensus of the cached projection sources; kicks the prefetcher when
+    a source is missing so the next load has it. Never scrapes here."""
+    from sleeper_auction.feeds import prefetch, scoring
+    from sleeper_auction.feeds.projections import consensus
+    res, errs = _projections().fetch_all(SEASON, week, cache_only=True)
+    if any("CacheMiss" in e for e in errs.values()):
+        prefetch.kick(SEASON, week)
+    sc = scoring.league_scoring(league_id) if league_id else scoring.HALF_PPR
+    c = consensus.build(SEASON, week, sc, res)
+    c["missing"] = sorted(errs)
+    return c
 
 
 def _final_proj(fd, pid, pos, pj):
-    """(final projection, props view, basis) for one player.
+    """(final projection, props view, basis, consensus row) for one player.
 
-    `pj` is his week_projections() row. Sleeper's number stands whenever the
-    markets do not cover enough of the line, or when Sleeper has none (a
-    player with no projection is usually out, and a stale prop must not
-    resurrect him).
+    feeds.blend: props (weighted by coverage) over the consensus median, else
+    Sleeper. When Sleeper has no projection the player is usually out, and
+    neither a stale prop nor another site's line resurrects him.
     """
     sl = (pj or {}).get("proj")
+    cons = ((fd.get("consensus") or {}).get("players") or {}).get(str(pid))
     pp = None
     try:
-        if fd.get("props") and pj and pj.get("stats"):
-            pp = _props_mod().player_props(fd["props"], pid, pos, pj["stats"],
-                                           fd.get("scoring"))
+        filler = (cons or {}).get("stats") or (pj or {}).get("stats")
+        if fd.get("props") and filler:
+            pp = _props_mod().player_props(fd["props"], pid, pos, filler, fd.get("scoring"))
     except Exception:
         pp = None
     if sl is None:
-        return None, pp, None
-    if pp and pp.get("mean") is not None and pp.get("coverage", 0) >= PROPS_MIN_COVERAGE:
-        return (round(PROPS_BLEND_W * pp["mean"] + (1 - PROPS_BLEND_W) * sl, 2), pp,
-                {"props": PROPS_BLEND_W, "sleeper": 1 - PROPS_BLEND_W})
-    return sl, pp, {"sleeper": 1.0}
+        return None, pp, None, cons
+    from sleeper_auction.feeds import blend
+    b = blend.final(sl, cons, pp)
+    return b["value"], pp, dict(b["basis"], weights=b["weights"]), cons
+
+
+def _cw_pos(pid):
+    try:
+        from sleeper_auction.feeds import ids
+        return (ids.crosswalk()["info"].get(str(pid)) or {}).get("pos")
+    except Exception:
+        return None
 
 
 def _merge_lines(lines, sched):
@@ -733,8 +760,8 @@ def build_slate(draft_id, roster_id, week):
         opp_line = lines.get(ln.get("opp")) or {}
         wx = weather(team if ln.get("home") else ln.get("opp"),
                      ln.get("kickoff"), sched.get(team))
-        pfinal, pprops, pbasis = _final_proj(fd, pid, pk["pos"] or base.get("pos"),
-                                             proj.get(pid))
+        pfinal, pprops, pbasis, pcons = _final_proj(fd, pid, pk["pos"] or base.get("pos"),
+                                                    proj.get(pid))
         players.append({
             "id": pid, "name": pk["name"] or base.get("name"),
             "pos": pk["pos"] or base.get("pos"), "team": team,
@@ -748,6 +775,9 @@ def build_slate(draft_id, roster_id, week):
             "proj_sleeper": (proj.get(pid) or {}).get("proj"),
             "proj_basis": pbasis,
             "props": pprops,
+            "consensus": {k: pcons.get(k) for k in ("median", "lo", "hi", "sd", "n",
+                                                    "by_source", "flags")} if pcons else None,
+            "ecr": ((fd.get("ecr") or {}).get("players") or {}).get(str(pid)),
             "season_proj": base.get("proj"),
             "opponent": ln.get("opp"), "home": ln.get("home"),
             "game_total": ln.get("total"), "spread": ln.get("spread"),
@@ -820,7 +850,7 @@ def build_slate(draft_id, roster_id, week):
                 tot += a
                 opp_locked += a
             else:
-                tot += _final_proj(fd, x, info.get("pos"), proj.get(x))[0] or 0.0
+                tot += _final_proj(fd, x, info.get("pos") or (_cw_pos(x)), proj.get(x))[0] or 0.0
         opp_total = round(tot, 1)
     return {"draft_id": draft_id, "phase": phase, "locked_points": locked_pts,
             "opp_locked_points": round(opp_locked, 1),
@@ -1027,6 +1057,15 @@ receivers, rush yards over expected per attempt for backs, PFR drops, yards \
 after contact and broken tackles. It is descriptive context, not a \
 projection: it explains WHY a rate is high or low, and it does not override \
 the projection or the matchup.
+- "consensus" is the median of up to six independent projection sources \
+(Sleeper/RotoWire, ESPN, CBS, FanDuel/numberFire, FFToday, FantasySharks), \
+each scored with this league's rules. "sd", "lo" and "hi" say how much they \
+disagree. A wide range means the projection itself is uncertain, which is \
+different from the player being volatile. A "source_thinks_out" flag means \
+one site projects him near zero while the others do not -- usually that site \
+has news the others have not priced in. Treat it as a lead.
+- "ecr" is FantasyPros' weekly expert consensus RANK (not points) with its \
+start/sit grade; "rank_std" is how much the experts disagree.
 - "props" is what the betting market implies for this player this week, \
 converted to half-PPR points from yardage, reception and touchdown markets \
 (Kalshi ladders and sportsbook over/unders). Markets move on news faster than \
@@ -1036,9 +1075,11 @@ information. "coverage" is how much of the number came from markets rather \
 than the projection. "anytime_td" is the market's probability that he scores. \
 "p10"/"p90" are this week's market floor and ceiling. A starter with NO props \
 posted can itself be a signal: books pull lines when a player's status is \
-uncertain. Say so, don't assume. "proj" is the final number: half market, \
-half Sleeper when coverage is 0.7 or more, else Sleeper ("proj_basis" says \
-which); "proj_sleeper" is Sleeper's own number.
+uncertain. Say so, don't assume. "proj" is the final number: props weighted \
+0.55 when they cover 70%+ of the line (0.25 when 30-70%) over the consensus \
+median (Sleeper alone if no consensus); "proj_basis" gives the weights and \
+whether they were chosen or calibrated; "proj_sleeper" is Sleeper's own \
+number.
 - "feed_sources" at the top level says which season and how many weeks each \
 of those was computed from. A line from "line_source": "nflverse" came from \
 the schedule file because ESPN had none; "line_sources_disagree" means the \
@@ -1556,6 +1597,18 @@ def _data_panel(names=("nflverse", "ffopportunity", "ids", "dynastyprocess",
         return ""
 
 
+def _proj_cell(p):
+    if p.get("proj") is None:
+        return "&mdash;"
+    c = p.get("consensus") or {}
+    sub = ""
+    if c.get("n"):
+        sub = "<div class='mut' style='font-size:10px;font-weight:400' title='%s'>%d src &middot; %s&ndash;%s</div>" % (
+            ", ".join("%s %s" % kv for kv in sorted((c.get("by_source") or {}).items())),
+            c["n"], c.get("lo"), c.get("hi"))
+    return "%s%s" % (p["proj"], sub)
+
+
 def _mkt_cell(p):
     pp = p.get("props") or {}
     if pp.get("mean") is None:
@@ -1646,7 +1699,7 @@ def html_report(slate, pos, ai=None, job_id=None):
             '<td class="mut">%s</td><td class="mut">%s</td><td class="mut">%s</td></tr>' % (
                 "st" if p["starting"] else "", "&#9733;" if p["starting"] else "",
                 p["name"], p["pos"], p["pos"],
-                p["proj"] if p["proj"] is not None else "&mdash;",
+                _proj_cell(p),
                 _mkt_cell(p),
                 ("pl" if (p.get("vs_proj") or 0) > 0 else
                  "mn" if p.get("actual") is not None else "mut"),
@@ -1761,8 +1814,9 @@ document.querySelectorAll('.nav a').forEach(function(a){a.href=a.dataset.p+qs;
   <tbody>__ROWS__</tbody></table></div>
   <div class="mut" style="font-size:12px">&#9733; = in your Sleeper starting lineup &middot;
   <b>Team total</b> is the Vegas implied points for that player's offense &middot;
-  <b>Proj</b> blends the market and Sleeper half and half when markets cover 70%+ of the
-  line (else Sleeper) &middot; <b>Mkt</b> is the betting-market mean in half-PPR points
+  <b>Proj</b> is the consensus of up to six projection sources scored with your league's
+  rules, blended with the betting market (weight 0.55 when props cover 70%+ of the line);
+  the line under it is how many sources and their range &middot; <b>Mkt</b> is the betting-market mean in half-PPR points
   (&#9679; full coverage, &#9680; partial) &middot;
   <b>Floor / Ceil</b> are this week's market 10th/90th percentiles when marked <i>mkt</i>,
   otherwise last season's 20th/80th percentile weekly half-PPR scores &middot;

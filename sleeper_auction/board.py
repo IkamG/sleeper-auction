@@ -1188,4 +1188,11 @@ if __name__ == "__main__":
             sk.close()
         except Exception:
             pass
+    try:
+        # Slow in-season feeds (projection scrapers, FantasyPros ECR) refresh
+        # on a daemon thread; pages only ever read their cache.
+        from sleeper_auction.feeds import prefetch
+        prefetch.start()
+    except Exception as e:
+        print("  prefetch not started: %s" % e)
     ThreadingHTTPServer((ARGS.host, ARGS.port), H).serve_forever()

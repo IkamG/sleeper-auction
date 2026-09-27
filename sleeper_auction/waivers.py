@@ -386,6 +386,8 @@ def _nflverse(league_id, week=None):
             rec_value=scoring.rec_value(scoring.league_scoring(league_id)))
     if common.enabled("ffopportunity.pbp"):
         tasks["redzone"] = lambda: nflverse.redzone()
+    if common.enabled("projections"):
+        tasks["consensus"] = lambda: sitstart._consensus(week, league_id)
     if common.enabled("props"):
         from sleeper_auction.feeds import props
         tasks["props"] = lambda: props.week_props(sitstart.SEASON, week)
@@ -398,6 +400,9 @@ def _nflverse(league_id, week=None):
                        ("usage", "xfp", "redzone")}
     if res.get("props"):
         res["_sources"]["props"] = {"as_of": res["props"].get("as_of")}
+    if res.get("consensus"):
+        res["_sources"]["consensus"] = {"sources": res["consensus"].get("sources"),
+                                        "missing": res["consensus"].get("missing")}
     return res
 
 
@@ -463,13 +468,21 @@ def build_board(draft_id, roster_id, week, limit=25):
         if any(v.values()):
             roles.setdefault(pid, {"tags": (), "gap": None, "eff": None}).update(v)
 
+    cons = (fd.get("consensus") or {}).get("players") or {}
+
     def enrich(pid, p):
         team = p.get("team")
         ln = lines.get(team) or {}
+        sl = (wk.get(pid) or {}).get("proj")
+        c = cons.get(pid) if sl is not None else None
         return {"sleeper_id": pid, "name": p["name"], "pos": p["pos"], "team": team,
                 "season_value": p.get("base"), "season_tier": p.get("tier"),
                 "value_conf": p.get("value_conf"),
-                "wk_proj": (wk.get(pid) or {}).get("proj"),
+                # Consensus of the projection sources where there is one: props
+                # are rare for free agents, so they are context, not the number.
+                "wk_proj": c["median"] if c else sl,
+                "wk_proj_sleeper": sl,
+                "wk_proj_range": [c["lo"], c["hi"], c["n"]] if c else None,
                 "opponent": ln.get("opp"), "implied_total": ln.get("implied"),
                 "depth": depth.get(pid), "injury": inj.get(db.nname(p["name"])),
                 "props": _props_for(fd, pid, p["pos"], wk.get(pid)),
@@ -626,6 +639,10 @@ opportunities predicts -- the role is better than the results, which is the \
 buy); and goal-line work on a light overall role ("redzone.gl_carries", \
 "redzone.rz_share"). "feed_sources" says which season and how many weeks \
 those came from. Two games of a share is a hint; say so.
+- "wk_proj" is the consensus median of up to six projection sources scored \
+with this league's rules (Sleeper's own number where no consensus exists); \
+"wk_proj_sleeper" is Sleeper's, and "wk_proj_range" is [low, high, number of \
+sources]. Need, the flex bar and every delta are computed on "wk_proj".
 - "props", when present, is this week's betting-market view in half-PPR \
 points (mean, p10/p90, anytime-TD probability). Most free agents have no \
 market at all; when one does, a market mean well above his projection is a \

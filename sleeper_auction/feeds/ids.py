@@ -151,6 +151,34 @@ def crosswalk(max_age=3600):
     return cw
 
 
+# Source spellings that board.NAME_FIXES does not cover. Kept here, not in
+# board.py, because board.NAME_FIXES must stay identical to sources/base.
+ALIASES = {"bam knight": "zonovan knight", "nathan carter": "nate carter"}
+OFFENSE = ("QB", "RB", "WR", "TE")
+
+
+def _by_name(cw, name, pos, team=None):
+    """Unique name key -> sid. Tries the name as given, without periods
+    ("D.J. Moore" -> "DJ Moore"), and an alias; then, only when exactly one
+    offensive player carries the name, at another position (sources disagree
+    on RB/TE for H-backs and on WR/CB for two-way players)."""
+    from sleeper_auction import board
+    names = [name, name.replace(".", ""), name.replace(".", " ")]
+    n = board.nname(name)
+    if n in ALIASES:
+        names.append(ALIASES[n])
+    for nm in names:
+        sid = cw["by_name"].get(_pkey(nm, pos, team))
+        if sid:
+            return sid
+    if pos in OFFENSE:
+        hits = {cw["by_name"].get(_pkey(nm, p, team)) for nm in names for p in OFFENSE
+                if p != pos} - {None}
+        if len(hits) == 1:
+            return hits.pop()
+    return None
+
+
 def _count(kind, what):
     c = COUNTS.setdefault(kind, {"hit": 0, "name_fallback": 0, "miss": 0})
     c[what] += 1
@@ -169,7 +197,7 @@ def to_sleeper(kind, value, name=None, pos=None, team=None, cw=None, count=True)
             _count(kind, "hit")
         return cw["by"][kind][v]
     if name and pos:
-        sid = cw["by_name"].get(_pkey(name, pos, team))
+        sid = _by_name(cw, name, pos, team)
         if sid:
             if count:
                 _count(kind, "name_fallback")

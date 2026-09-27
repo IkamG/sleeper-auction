@@ -67,7 +67,8 @@ Signals fed to the model:
 | Signal | Source | Why it matters |
 |---|---|---|
 | Implied team total | Vegas spread + O/U (ESPN; nflverse schedule fills games ESPN has no line for) | The market's own forecast of how much offense exists to share |
-| Weekly projection | Sleeper, native half-PPR, blended with player props | The baseline. When markets price 70%+ of a player's line, **Proj** is half market mean and half Sleeper; `proj_sleeper` keeps Sleeper's own number |
+| Weekly projection | Consensus of six projection sources, blended with player props | The baseline. The consensus median, with props weighted 0.55 when they price 70%+ of the line (0.25 at 30–70%). The number of sources and their range show under it; `proj_sleeper` keeps Sleeper's own number |
+| Expert rank | FantasyPros weekly ECR | A rank and start/sit grade, not points, so it sits beside the projection rather than in it |
 | Player props | Kalshi ladders (keyless) + The Odds API over/unders (`ODDS_API_KEY`) | The market's own view of this week, converted to league points. Moves on news faster than projections; a missing line on a starter is itself a signal. Also gives **this week's** floor and ceiling (p10/p90, marked *mkt*) |
 | Boom/bust profile | Last season's actual weekly scores | A projection is a mean; volatility says whether it's reliable |
 | Defense vs position | Computed from real results | A team total can't say "bad for a WR *specifically*" |
@@ -292,6 +293,9 @@ scripted caller wants the whole answer in one response.
         scoring.py    league scoring_settings -> points(stat line)
         nflverse.py   usage, snaps, practice, xFP, red zone, schedule (nflverse/ffverse)
         props/        kalshi.py, oddsapi.py, implied.py (markets -> points), merge
+        projections/  one adapter per projection site + consensus.py
+        blend.py      final weekly number: props over the consensus
+        prefetch.py   background refresh of the slow scrapers
     tests/            unittest, network-free (fixtures in tests/fixtures)
     run.sh            launcher; picks the best available interpreter
     cache/            on-disk HTTP cache (gitignored)
@@ -307,6 +311,7 @@ Every module runs standalone:
     python3 -m sleeper_auction.feeds.nflverse --probe --season 2026
     python3 -m sleeper_auction.feeds.props --probe --week N  # series, joins, coverage
     python3 -m sleeper_auction.feeds.props.implied --fit     # refit prop distribution constants
+    python3 -m sleeper_auction.feeds.projections --probe --week N  # rows, join rate, fetch time
 
 Tests (offline, stdlib `unittest`, run on Python 3.9 and 3.14):
 
@@ -424,6 +429,33 @@ first runs in a week, and is gone if `cache/` is cleared. Rates fall back to
 last season until the current one has two weeks, and every payload records
 which season it used.
 
+### Weekly projection sources
+
+| Source | Produced by | Format | Joins on |
+|---|---|---|---|
+| Sleeper | RotoWire | JSON | Sleeper id |
+| ESPN | Mike Clay | JSON | ESPN id |
+| CBS Sports | CBS | HTML table | CBS id |
+| FanDuel Research | numberFire | GraphQL (current week only; no K/DEF) | name + team |
+| FFToday | FFToday | HTML table | name + team |
+| FantasySharks | FantasySharks | CSV | name + team |
+
+Every source's **stat line** is scored with the league's own scoring, so they
+are on one scale; a source's own points are used only for K and DEF. One value
+per producer (Yahoo is skipped: it shows FantasyPros' numbers). Median when
+three or more sources have a player, mean otherwise, with the range and spread
+alongside. A source projecting a player near zero while the others do not is
+kept and flagged `source_thinks_out`: that site usually has news the others
+have not priced in. The consensus stat line also fills the components props do
+not cover. Tables are parsed by header label, never by column position.
+
+The scrapers never run while a page loads. A background thread refreshes them
+(hourly on Sunday morning, every 3 hours from Tuesday noon, else every 12) and
+pages read the cache; a page that finds a source missing starts a refresh and
+says so in the Data panel. NFL.com is not a source: its fantasy projections
+were retired (the pages now redirect to nfl.com news, and the API says ESPN is
+the NFL's official fantasy game).
+
 ---
 
 ## Valuation
@@ -464,6 +496,9 @@ league.
   ladder is only trusted when it is quoted tightly. The market/Sleeper blend
   weight (0.5) is chosen, not fitted, until there are weeks of results to
   calibrate against.
+- On a cold start the consensus has only Sleeper until the background refresh
+  finishes (about 30 seconds per week, because the scrapers pause between
+  pages). The Data panel shows which sources are missing.
 - There is no routes-run data (no TPRR/YPRR) in any free feed. Snap share and
   target share are the proxies.
 - WR/CB charts are partial by nature; unlisted receivers are reported unknown.

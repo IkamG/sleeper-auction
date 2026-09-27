@@ -79,6 +79,28 @@ def enabled(name):
 class FeedDisabled(Exception):
     pass
 
+
+class CacheMiss(Exception):
+    """Raised in cache-only mode when nothing is cached for a key."""
+
+
+_TL = threading.local()
+
+
+class cache_only(object):
+    """Context manager: fetch_text serves any cached copy and never hits the
+    network. The request path wraps slow multi-page scrapes in it; the
+    prefetcher fills the cache in the background."""
+
+    def __enter__(self):
+        self.prev = getattr(_TL, "cache_only", False)
+        _TL.cache_only = True
+        return self
+
+    def __exit__(self, *a):
+        _TL.cache_only = self.prev
+        return False
+
 # ---------------------------------------------------------------- status
 
 STATUS = {}
@@ -167,6 +189,13 @@ def fetch_text(url, key, ttl, headers=None, stale_ok=True, feed=None, data=None,
     """
     p = cache_path(key)
     age = cache_age(key)
+    if getattr(_TL, "cache_only", False):
+        if age is None:
+            raise CacheMiss(key)
+        if feed:
+            note(feed, cache_age_s=int(age), stale=age >= ttl)
+        txt = _read(p)
+        return (txt, {}) if want_headers else txt
     if age is not None and age < ttl:
         if feed:
             note(feed, cache_age_s=int(age), stale=False)
