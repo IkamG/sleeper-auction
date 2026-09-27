@@ -582,6 +582,202 @@ def byes(season=SEASON):
     weeks = sorted(s)
     return {t: next((w for w in weeks if t not in s[w]), None) for t in teams} if weeks else {}
 
+# ---------------------------------------------------------------- PFR / NGS
+#
+# Probed 2026-09-27:
+#  * pfr_advstats/advstats_week_rec_2026.csv.gz (525 rows): per game
+#    receiving_drop, receiving_drop_pct, receiving_broken_tackles,
+#    rushing_broken_tackles, receiving_int, receiving_rat. Keyed by
+#    pfr_player_id. NOTE: the weekly receiving file has NO aDOT or yards
+#    after catch columns (those are only in the season-level PFR file);
+#    aDOT/YAC come from nflverse stats and NGS instead.
+#  * advstats_week_rush_2026.csv.gz (268 rows): carries,
+#    rushing_yards_before_contact(_avg), rushing_yards_after_contact(_avg),
+#    rushing_broken_tackles.
+#  * nextgen_stats/ngs_{receiving,rushing}.csv.gz are ALL seasons in one file
+#    (the per-season 2024+ names 404 / are stubs). week == 0 rows are NGS's
+#    own season totals (2026: 88 receiving, 43 rushing) and include players
+#    whose weekly rows are missing because they did not qualify that week,
+#    so the season numbers come from the week-0 row. Keyed by player_gsis_id.
+#    Receiving: avg_separation, avg_cushion, avg_yac_above_expectation.
+#    Rushing: rush_yards_over_expected_per_att, efficiency (distance run per
+#    yard gained; lower is more north-south).
+
+NGS_MIN_TGT = 10
+NGS_MIN_ATT = 20
+
+
+def pfr_adv_from_rows(rec, rush, recent=3, cw=None, targets=None):
+    """Aggregate PFR weekly advanced stats from sums (pure; tests use it)."""
+    per = {}
+    for kind, rows in (("rec", rec), ("rush", rush)):
+        for r in rows:
+            if r.get("game_type") not in (None, "", "REG"):
+                continue
+            sid = ids.to_sleeper("pfr", r.get("pfr_player_id"), r.get("pfr_player_name"),
+                                 None, r.get("team"), cw=cw)
+            if sid:
+                per.setdefault(sid, {}).setdefault(_i(r.get("week")), {})[kind] = r
+    out = {}
+    for sid, weeks in per.items():
+        wk = sorted(weeks)
+
+        def agg(ws):
+            a = {"drops": 0.0, "btk": 0.0, "car": 0.0, "ybc": 0.0, "yac": 0.0, "g": len(ws)}
+            for w in ws:
+                rc, ru = weeks[w].get("rec") or {}, weeks[w].get("rush") or {}
+                a["drops"] += _f(rc.get("receiving_drop"))
+                a["btk"] += _f(rc.get("receiving_broken_tackles")) + _f(
+                    ru.get("rushing_broken_tackles") or rc.get("rushing_broken_tackles"))
+                a["car"] += _f(ru.get("carries"))
+                a["ybc"] += _f(ru.get("rushing_yards_before_contact"))
+                a["yac"] += _f(ru.get("rushing_yards_after_contact"))
+            return a
+        a, b = agg(wk), agg(wk[-recent:])
+        tg = (targets or {}).get(sid)
+        d = {"games": a["g"], "drops": int(a["drops"]), "broken_tackles": int(a["btk"]),
+             "drop_pct": round(a["drops"] / tg, 3) if tg and tg >= NGS_MIN_TGT else None}
+        if a["car"] >= NGS_MIN_ATT:
+            d.update(carries=int(a["car"]), ybc_att=round(a["ybc"] / a["car"], 2),
+                     yaco_att=round(a["yac"] / a["car"], 2),
+                     btk_per_att=round(a["btk"] / a["car"], 3))
+            if b["car"] >= 10:
+                d["yaco_att_recent"] = round(b["yac"] / b["car"], 2)
+        out[sid] = d
+    return out
+
+
+def pfr_adv(season=None, recent=3, min_weeks=2):
+    def load(s):
+        return _asset("pfr_advstats", "advstats_week_rec_%s" % s, "nflverse.pfr", 12 * 3600)
+    load.feed = "nflverse.pfr"
+
+    def run():
+        src, rec, wk = _season_rows(load, season, min_weeks)
+        if not rec:
+            return {"season": None, "players": {}}
+        try:
+            rush = _asset("pfr_advstats", "advstats_week_rush_%s" % src, "nflverse.pfr",
+                          12 * 3600)
+        except Exception as e:
+            common.fail("nflverse.pfr", e)
+            rush = []
+        tg = {}
+        try:
+            for r in player_weeks(src):
+                sid = ids.to_sleeper("gsis", r.get("player_id"), r.get("player_display_name"),
+                                     r.get("position"), r.get("team"), count=False)
+                if sid:
+                    tg[sid] = tg.get(sid, 0) + _f(r.get("targets"))
+        except Exception:
+            pass
+        pl = pfr_adv_from_rows(rec, rush, recent, ids.crosswalk(), tg)
+        common.ok("nflverse.pfr", rows=len(pl), season=src, weeks=len(wk))
+        return {"season": src, "weeks": len(wk), "players": pl}
+    return _memo("pfr-%s-%s" % (season, recent), 300, run)
+
+
+def ngs_from_rows(rec, rush, season, cw=None):
+    """Season NGS lines by Sleeper id from the week-0 totals (pure)."""
+    out = {}
+    for r in rec:
+        if r.get("season") != str(season) or r.get("week") != "0" \
+                or r.get("season_type") not in (None, "", "REG"):
+            continue
+        if _f(r.get("targets")) < NGS_MIN_TGT:
+            continue
+        sid = ids.to_sleeper("gsis", r.get("player_gsis_id"), r.get("player_display_name"),
+                             r.get("player_position"), r.get("team_abbr"), cw=cw)
+        if sid:
+            out.setdefault(sid, {}).update(
+                pos=r.get("player_position"), targets=int(_f(r.get("targets"))),
+                separation=round(_f(r.get("avg_separation")), 2),
+                cushion=round(_f(r.get("avg_cushion")), 2),
+                yac_oe=round(_f(r.get("avg_yac_above_expectation")), 2))
+    for r in rush:
+        if r.get("season") != str(season) or r.get("week") != "0" \
+                or r.get("season_type") not in (None, "", "REG"):
+            continue
+        if _f(r.get("rush_attempts")) < NGS_MIN_ATT:
+            continue
+        sid = ids.to_sleeper("gsis", r.get("player_gsis_id"), r.get("player_display_name"),
+                             r.get("player_position"), r.get("team_abbr"), cw=cw)
+        if sid:
+            out.setdefault(sid, {}).update(
+                pos=r.get("player_position"), att=int(_f(r.get("rush_attempts"))),
+                ryoe_att=round(_f(r.get("rush_yards_over_expected_per_att")), 2),
+                rush_eff=round(_f(r.get("efficiency")), 2),
+                stacked_box_pct=round(_f(r.get("percent_attempts_gte_eight_defenders")), 1))
+    return out
+
+
+def ngs(season=None, min_weeks=2):
+    def run():
+        try:
+            rec = _asset("nextgen_stats", "ngs_receiving", "nflverse.ngs", 12 * 3600)
+            rush = _asset("nextgen_stats", "ngs_rushing", "nflverse.ngs", 12 * 3600)
+        except Exception as e:
+            common.fail("nflverse.ngs", e)
+            return {"season": None, "players": {}}
+        cw = ids.crosswalk()
+        for s in ([season] if season else [SEASON, PRIOR]):
+            wk = {_i(r.get("week")) for r in rec if r.get("season") == s and _i(r.get("week")) > 0}
+            if not season and s == SEASON and len(wk) < min_weeks:
+                continue
+            pl = ngs_from_rows(rec, rush, s, cw)
+            if pl:
+                common.ok("nflverse.ngs", rows=len(pl), season=s, weeks=len(wk))
+                return {"season": s, "weeks": len(wk), "players": pl}
+        return {"season": None, "players": {}}
+    return _memo("ngs-%s" % season, 300, run)
+
+
+CTX_FIELDS = {"RB": ("ryoe_att", "yaco_att", "btk_per_att"),
+              "WR": ("separation", "yac_oe", "drop_pct"),
+              "TE": ("separation", "yac_oe", "drop_pct")}
+LOWER_IS_BETTER = ("drop_pct",)
+
+
+def efficiency_ctx(season=None, positions=None):
+    """PFR + NGS per player with within-position percentiles.
+
+    Descriptive context, not a projection: it explains why a rate is high or
+    low. `pct` is the within-position percentile oriented so higher is better
+    (a low drop rate scores high). `extreme` lists fields in the best or
+    worst 10% at the position.
+    """
+    p, n = pfr_adv(season), ngs(season)
+    pos_of = {}
+    cw = ids.crosswalk()
+    merged = {}
+    for src in (p.get("players") or {}, n.get("players") or {}):
+        for sid, d in src.items():
+            merged.setdefault(sid, {}).update({k: v for k, v in d.items() if v is not None})
+            pos_of[sid] = d.get("pos") or pos_of.get(sid) or (cw["info"].get(sid) or {}).get("pos")
+    by_pos = {}
+    for sid, d in merged.items():
+        by_pos.setdefault(pos_of.get(sid), []).append(sid)
+    for pos, sids in by_pos.items():
+        for f in CTX_FIELDS.get(pos, ()):
+            vals = sorted(merged[s][f] for s in sids if merged[s].get(f) is not None)
+            if len(vals) < 10:
+                continue
+            for s in sids:
+                v = merged[s].get(f)
+                if v is None:
+                    continue
+                pct = sum(1 for x in vals if x < v) / len(vals)
+                if f in LOWER_IS_BETTER:
+                    pct = 1 - pct
+                merged[s].setdefault("pct", {})[f] = round(pct, 2)
+                if pct >= 0.9 or pct <= 0.1:
+                    merged[s].setdefault("extreme", []).append(
+                        "%s %s" % (f, "best10%" if pct >= 0.9 else "worst10%"))
+    return {"season": p.get("season") or n.get("season"),
+            "sources": {"pfr": {"season": p.get("season"), "weeks": p.get("weeks")},
+                        "ngs": {"season": n.get("season"), "weeks": n.get("weeks")}},
+            "players": merged}
+
 # ---------------------------------------------------------------- probe
 
 def _probe(season):
@@ -627,6 +823,18 @@ def _probe(season):
                reverse=True)[:3]))
     sc = schedule(season)
     print("schedule: weeks %d; wk3 KC %s" % (len(sc), (sc.get(3) or {}).get("KC")))
+    ids.COUNTS.clear()
+    pa = pfr_adv(season)
+    print("pfr_adv: season %s weeks %s players %d, join %s" % (
+        pa["season"], pa.get("weeks"), len(pa["players"]), ids.join_status().get("pfr")))
+    ids.COUNTS.clear()
+    ng = ngs(season)
+    print("ngs: season %s weeks %s players %d, join %s" % (
+        ng["season"], ng.get("weeks"), len(ng["players"]), ids.join_status().get("gsis")))
+    ec = efficiency_ctx(season)
+    ex = [(cw["info"].get(k, {}).get("name"), v.get("extreme")) for k, v in ec["players"].items()
+          if v.get("extreme")][:5]
+    print("efficiency_ctx: %d players; extremes e.g. %s" % (len(ec["players"]), ex))
     print("took %.1fs" % (time.time() - t0))
 
 

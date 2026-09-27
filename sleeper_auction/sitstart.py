@@ -477,10 +477,11 @@ def _start_feeds(week, nteam, league_id=None):
         "xfp": lambda: nflverse.expected_points(rec_value=rv()),
         "redzone": lambda: nflverse.redzone(),
         "schedule": lambda: (nflverse.schedule(SEASON) or {}).get(int(week)) or {},
+        "ctx": lambda: nflverse.efficiency_ctx(),
     }
     names = {"usage": "nflverse.usage", "practice": "nflverse.injuries",
              "xfp": "ffopportunity.ep", "redzone": "ffopportunity.pbp",
-             "schedule": "nflverse.schedule"}
+             "schedule": "nflverse.schedule", "ctx": "nflverse.ngs"}
     tasks = {k: v for k, v in tasks.items() if common.enabled(names[k])}
     from concurrent.futures import ThreadPoolExecutor
     ex = ThreadPoolExecutor(max_workers=max(1, len(tasks)))
@@ -498,6 +499,8 @@ def _start_feeds(week, nteam, league_id=None):
         for k in ("usage", "xfp", "redzone"):
             if out.get(k):
                 src[k] = {"season": out[k].get("season"), "weeks": out[k].get("weeks")}
+        if out.get("ctx"):
+            src["efficiency_ctx"] = out["ctx"].get("sources")
         if out.get("practice"):
             src["practice"] = {"week": out["practice"].get("week")}
         if out.get("xfp"):
@@ -564,6 +567,17 @@ def _xfp_view(fd, pid):
         return None
     return {"xfp_pg": x["xfp_pg"], "fp_pg": x["fp_pg"], "diff_pg": x.get("diff_pg"),
             "xtd_pg": x.get("xtd_pg"), "td_pg": x.get("td_pg"), "games": x["games"]}
+
+
+def _ctx_view(fd, pid, only_extreme=False):
+    """PFR/NGS context. With only_extreme, None unless a value is top/bottom 10%."""
+    c = ((fd.get("ctx") or {}).get("players") or {}).get(str(pid))
+    if not c or (only_extreme and not c.get("extreme")):
+        return None
+    keep = ("separation", "cushion", "yac_oe", "drop_pct", "drops", "ryoe_att", "rush_eff",
+            "yaco_att", "ybc_att", "btk_per_att", "broken_tackles", "stacked_box_pct",
+            "extreme", "pct")
+    return {k: c[k] for k in keep if c.get(k) is not None}
 
 
 def _rz_view(fd, pid):
@@ -704,6 +718,7 @@ def build_slate(draft_id, roster_id, week):
             "practice": _practice_view(fd, pid),
             "xfp": _xfp_view(fd, pid),
             "redzone": _rz_view(fd, pid),
+            "efficiency_ctx": _ctx_view(fd, pid, only_extreme=True),
         })
     players.sort(key=lambda p: -(p["proj"] or 0))
 
@@ -953,6 +968,12 @@ null under two games because one game of it is noise.
 - "redzone" is his share of the team's red-zone opportunities (carries and \
 targets inside the 20), and his goal-line carries (inside the 5), where \
 touchdowns come from.
+- "efficiency_ctx" appears only when one of his rates is in the best or \
+worst 10% at his position: NGS separation, cushion and YAC over expected for \
+receivers, rush yards over expected per attempt for backs, PFR drops, yards \
+after contact and broken tackles. It is descriptive context, not a \
+projection: it explains WHY a rate is high or low, and it does not override \
+the projection or the matchup.
 - "feed_sources" at the top level says which season and how many weeks each \
 of those was computed from. A line from "line_source": "nflverse" came from \
 the schedule file because ESPN had none; "line_sources_disagree" means the \

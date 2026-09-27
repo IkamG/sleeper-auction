@@ -124,7 +124,8 @@ def usage_feeds():
     except Exception:
         return {}
     res, _ = common.parallel({"usage": lambda: nflverse.usage(),
-                              "xfp": lambda: nflverse.expected_points()}, timeout=45)
+                              "xfp": lambda: nflverse.expected_points(),
+                              "ctx": lambda: nflverse.efficiency_ctx()}, timeout=45)
     return res
 
 
@@ -233,6 +234,16 @@ def classify(pid, info, e, gap, backfields, depth, nfv=None, mine=False):
                    "workload sits at %d%% -- productive on the touches he gets"
                    % (gap["eff_metric"].upper(), gap["eff_value"],
                       round(gap["eff_pct"] * 100), round(gap["use_pct"] * 100)))
+        # Independent confirmation that the efficiency is the player's and not
+        # the scheme's: NGS measures it against what the play was expected to
+        # yield (RYOE) or how open he got (separation).
+        c = (nfv or {}).get("ctx") or {}
+        cp = c.get("pct") or {}
+        if c.get("ryoe_att") is not None and c["ryoe_att"] > 0:
+            why.append("NGS agrees: %+.2f rush yards over expected per carry" % c["ryoe_att"])
+        elif cp.get("separation") is not None and cp["separation"] >= 0.6:
+            why.append("NGS agrees: %.1f yds average separation (%d%% at the position)"
+                       % (c["separation"], round(100 * cp["separation"])))
     if pos == "RB" and team:
         bf = backfields.get(team) or {}
         if bf.get("shape") == "workhorse" and order in (2, 3):
@@ -300,7 +311,8 @@ def stash_board(draft_id, roster_id, limit=20):
     fd = usage_feeds()
 
     def nfv(pid):
-        return {"usage": sitstart._usage_view(fd, pid), "xfp": sitstart._xfp_view(fd, pid)}
+        return {"usage": sitstart._usage_view(fd, pid), "xfp": sitstart._xfp_view(fd, pid),
+                "efficiency_ctx": sitstart._ctx_view(fd, pid)}
 
     cands = []
     for pid, info in index.items():
@@ -310,7 +322,9 @@ def stash_board(draft_id, roster_id, limit=20):
             continue
         e = eff["players"].get(pid)
         g = gaps.get(pid)
-        tags, why = classify(pid, info, e, g, backfields, depth, nfv(pid))
+        nv = nfv(pid)
+        tags, why = classify(pid, info, e, g, backfields, depth,
+                             dict(nv, ctx=nv.get("efficiency_ctx")))
         if not tags:
             continue
         base = byid.get(pid) or {}
@@ -486,6 +500,12 @@ points and it is touchdowns doing it. Touchdown rate regresses; name it as a \
 weak point even while he is producing.
 - "usage" (target share, WOPR) and "xfp" (expected vs actual points per game) \
 are from nflverse; "feed_sources" says which season and how many weeks.
+- "efficiency_ctx" is descriptive context, not a projection: NGS separation, \
+cushion and YAC over expected, rush yards over expected (RYOE) per carry, PFR \
+drops, yards after contact and broken tackles, with within-position \
+percentiles ("pct", higher is better). It explains WHY a rate is high or low. \
+When RYOE or separation agrees with an efficient-unused gap, the efficiency \
+is more likely the player's than the scheme's.
 
 Be honest about what a stash costs. A bench spot is a real price in a 13-man \
 roster, and most stashes never pay. Rank ruthlessly, recommend few, and name \

@@ -75,6 +75,7 @@ Signals fed to the model:
 | Practice trajectory | nflverse injury report + Sleeper, snapshotted through the week | DNP → LP → FP is on track; FP → LP late in the week is the worst sign in the data. Veteran rest days are labelled, not flagged |
 | Expected points (xFP) | ffopportunity | Points his opportunities were worth. Far above means touchdown luck due to regress; far below means the role is better than the results |
 | Red-zone and goal-line share | ffopportunity play-by-play | Where touchdowns come from |
+| Efficiency context | Next Gen Stats + PFR advanced | Only when a rate is in the best or worst 10% at the position. Explains *why* a rate is high or low; never a projection |
 | Depth chart | Sleeper, live | Current team, current season — never stale |
 | Injuries | ESPN | Status, body part, expected return |
 | Weather | Open-Meteo, at kickoff (kickoff to +3 h) | Wind above ~15 mph suppresses passing and kicking. Roof comes from the nflverse schedule; neutral-site games (Rio, London, …) use the venue's own coordinates |
@@ -183,6 +184,7 @@ Candidates are tagged by *why* they are worth a bench spot:
 | `open-committee` | No back on that team owns the job. Upside needs no injury. |
 | `rookie-in-line` | Rookie already first or second on the depth chart. |
 | `red-zone role` | Scoring chances without volume. Touchdown-dependent. |
+| `efficient-unused` + NGS | When rush yards over expected or separation agrees with the gap, the why says so: independent evidence the efficiency is the player's, not the scheme's. |
 | `rising-share` | Target share up 8+ points over the last three games, on 4+ targets a game. Usage leads production. |
 | `buy-low` | Expected points from his opportunities run 3+ a game ahead of what he has scored. |
 | `sell-high` | Your roster only: scoring 4+ a game above expected over three games, driven by touchdowns. Named as a weak point while he is still producing. |
@@ -385,6 +387,8 @@ different shapes and cadences. Rules every feed follows:
 | Injury report | nflverse `injuries_<season>` + Sleeper practice fields | 2 h Wed–Sat, else 12 h | practice trajectory, game designation |
 | Expected points | ffopportunity `ep_weekly_<season>` (full PPR, converted to league scoring) | 6 h | xFP, buy-low / sell-high |
 | Play-by-play | ffopportunity `ep_pbp_rush/pass_<season>` | 6 h | red-zone and goal-line share, team pass rate over expected |
+| PFR advanced | nflverse `advstats_week_{rec,rush}_<season>` | 12 h | drops, yards after contact, broken tackles (joined by PFR id) |
+| Next Gen Stats | nflverse `ngs_{receiving,rushing}` (season-total rows) | 12 h | separation, cushion, YAC over expected, rush yards over expected |
 | Schedule | nflverse `games.csv` | 2 h | kickoff time, roof, neutral venues, fallback lines, bye weeks |
 
 nflverse publishes only the **latest** practice status per player-week, so
