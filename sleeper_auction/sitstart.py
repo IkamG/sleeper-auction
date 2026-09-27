@@ -17,6 +17,7 @@ import shutil
 import statistics
 import subprocess
 import sys
+import time
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -176,8 +177,14 @@ def week_projections(week, season=SEASON):
         st, pl = row.get("stats") or {}, row.get("player") or {}
         pid = str(row.get("player_id") or pl.get("player_id") or "")
         if pid and st.get("pts_half_ppr") is not None:
+            # "stats" is the full projected stat line (Sleeper keys). It is the
+            # filler for components with no market when props are converted
+            # to points, and a source line for the consensus.
             out[pid] = {"proj": st["pts_half_ppr"], "opp": st.get("opponent"),
-                        "gp": st.get("gp")}
+                        "gp": st.get("gp"),
+                        "stats": {k: v for k, v in st.items()
+                                  if isinstance(v, (int, float)) and not k.startswith(
+                                      ("pts_", "adp_", "pos_", "rank_"))}}
     return out
 
 
@@ -324,8 +331,21 @@ def snap_trend(season=None):
                       "trend": round(100 * (sum(recent) / len(recent) - season_avg)),
                       "earned_on": vals[-1][2]}
         if out:
-            return {"season": src, "players": out}
-    return {"season": None, "players": {}}
+            return {"season": src, "players": out, "by_id": _snaps_by_id(src)}
+    return {"season": None, "players": {}, "by_id": {}}
+
+
+def _snaps_by_id(season):
+    """Same shape keyed by Sleeper id via pfr_player_id; {} if the feed is down.
+
+    The name join above cannot tell two "Mike Williams" rows apart; the ID
+    join can. _snaps_for() prefers this map and falls back to names.
+    """
+    try:
+        from sleeper_auction.feeds import nflverse
+        return nflverse.snaps(season).get("players") or {}
+    except Exception:
+        return {}
 
 
 def depth_charts():
@@ -352,7 +372,14 @@ def depth_charts():
 
 
 def injuries():
-    d = db.gj("%s/injuries" % ESPN, headers=ESPN_HDRS, key="espn-inj", ttl=1800)
+    # A failed fetch serves the last cached report (any age), else nothing:
+    # an injury feed hiccup must not take the whole page down.
+    try:
+        from sleeper_auction.feeds import common
+        d = common.fetch_json("%s/injuries" % ESPN, "espn-inj", 1800, headers=ESPN_HDRS,
+                              feed="espn.injuries")
+    except Exception:
+        return {}
     out = {}
     for team in d.get("injuries", []):
         for it in team.get("injuries", []):
@@ -369,26 +396,53 @@ def injuries():
     return out
 
 
-def weather(team, kickoff=None):
-    """Wind and precipitation at the home stadium. Domes short-circuit."""
+def weather(team, kickoff=None, game=None):
+    """Wind, precipitation and temperature at kickoff. Domes short-circuit.
+
+    `game` is this team's row from feeds.nflverse.schedule(): its roof beats
+    STADIUM's (retractable roofs, neutral sites) and a neutral venue brings
+    its own coordinates -- BAL@DAL in Rio is not played in Arlington.
+    With a kickoff time the window is [kickoff, kickoff + 3h] in UTC; without
+    one it falls back to the whole 7-day forecast, which over-flags wind.
+    """
+    game = game or {}
     s = STADIUM.get(db.nteam(team))
-    if not s:
+    coords = game.get("venue_coords") or (s[:2] if s else None)
+    if not coords:
         return None
-    lat, lon, dome = s
-    if dome:
+    roof = (game.get("roof") or "").lower()
+    if roof in ("dome", "closed"):
+        return {"dome": True, "roof": roof}
+    if not roof and s and s[2] and not game.get("neutral"):
         return {"dome": True}
+    lat, lon = coords
+    kickoff = game.get("kickoff_utc") or kickoff
     try:
         d = db.gj("https://api.open-meteo.com/v1/forecast?latitude=%s&longitude=%s"
                   "&hourly=temperature_2m,wind_speed_10m,precipitation_probability"
                   "&forecast_days=7&temperature_unit=fahrenheit&wind_speed_unit=mph"
-                  % (lat, lon), key="wx-%s" % team, ttl=10800)
+                  "&timezone=UTC" % (lat, lon),
+                  key="wx-utc-%s-%s" % (round(lat, 2), round(lon, 2)), ttl=10800)
     except Exception:
-        return {"dome": False}
+        return {"dome": False, "roof": roof or None}
     h = d.get("hourly") or {}
-    wind = [w for w in (h.get("wind_speed_10m") or []) if w is not None]
-    temp = [t for t in (h.get("temperature_2m") or []) if t is not None]
-    pcp = [p for p in (h.get("precipitation_probability") or []) if p is not None]
-    return {"dome": False,
+    times = h.get("time") or []
+    idx = list(range(len(times)))
+    at_kick = False
+    if kickoff and times:
+        k = str(kickoff).replace("Z", "")[:13]          # 'YYYY-MM-DDTHH'
+        hit = [i for i, t in enumerate(times) if t[:13] == k]
+        if hit:
+            idx = list(range(hit[0], min(hit[0] + 4, len(times))))
+            at_kick = True
+
+    def pick(name):
+        v = h.get(name) or []
+        return [v[i] for i in idx if i < len(v) and v[i] is not None]
+    wind, temp, pcp = (pick("wind_speed_10m"), pick("temperature_2m"),
+                       pick("precipitation_probability"))
+    return {"dome": False, "roof": roof or None, "at_kickoff": at_kick,
+            "venue": game.get("stadium") if game.get("neutral") else None,
             "wind_mph": round(max(wind)) if wind else None,
             "temp_f": round(statistics.mean(temp)) if temp else None,
             "precip_pct": max(pcp) if pcp else None}
@@ -414,16 +468,219 @@ def league_matchup(league_id, roster_id, week):
             "opp_players": (opp.get("players") or []) if opp else []}
 
 
+# ------------------------------------------------------------------ feeds
+
+def _start_feeds(week, nteam, league_id=None):
+    """Kick off the nflverse feeds in the background; returns collect().
+
+    They run while the existing Sleeper/ESPN calls do, so they do not add
+    their latencies to the page. Every one is optional: collect() returns
+    whatever arrived, and a failure or FEEDS_DISABLED leaves that key out.
+    """
+    try:
+        from sleeper_auction.feeds import common, nflverse, scoring
+    except Exception:
+        return lambda: {}
+
+    def rv():
+        return scoring.rec_value(scoring.league_scoring(league_id)) if league_id else 0.5
+    tasks = {
+        "usage": lambda: nflverse.usage(),
+        "practice": lambda: nflverse.practice(SEASON, week),
+        "xfp": lambda: nflverse.expected_points(rec_value=rv()),
+        "redzone": lambda: nflverse.redzone(),
+        "schedule": lambda: (nflverse.schedule(SEASON) or {}).get(int(week)) or {},
+        "ctx": lambda: nflverse.efficiency_ctx(),
+        "props": lambda: _props_mod().week_props(SEASON, week),
+        "scoring": lambda: scoring.league_scoring(league_id),
+        "consensus": lambda: _consensus(week, league_id),
+        "ecr": lambda: _projections().week_ecr(cache_only=True),
+    }
+    names = {"usage": "nflverse.usage", "practice": "nflverse.injuries",
+             "xfp": "ffopportunity.ep", "redzone": "ffopportunity.pbp",
+             "schedule": "nflverse.schedule", "ctx": "nflverse.ngs",
+             "props": "props", "scoring": "league.scoring",
+             "consensus": "projections", "ecr": "fantasypros.week"}
+    tasks = {k: v for k, v in tasks.items() if common.enabled(names[k])}
+    from concurrent.futures import ThreadPoolExecutor
+    ex = ThreadPoolExecutor(max_workers=max(1, len(tasks)))
+    futs = {k: ex.submit(fn) for k, fn in tasks.items()}
+
+    def collect(timeout=45):
+        out, t0 = {}, time.time()
+        for k, f in futs.items():
+            try:
+                out[k] = f.result(timeout=max(0.1, timeout - (time.time() - t0)))
+            except Exception as e:
+                common.fail(names[k], e)
+        ex.shutdown(wait=False)
+        src = {}
+        for k in ("usage", "xfp", "redzone"):
+            if out.get(k):
+                src[k] = {"season": out[k].get("season"), "weeks": out[k].get("weeks")}
+        if out.get("ctx"):
+            src["efficiency_ctx"] = out["ctx"].get("sources")
+        if out.get("practice"):
+            src["practice"] = {"week": out["practice"].get("week")}
+        if out.get("props"):
+            src["props"] = {"as_of": out["props"].get("as_of"),
+                            "players": len(out["props"].get("players") or {})}
+        if out.get("consensus"):
+            src["consensus"] = {"sources": out["consensus"].get("sources"),
+                                "week": out["consensus"].get("week")}
+        if out.get("ecr"):
+            src["fantasypros_ecr"] = {"week": out["ecr"].get("week")}
+        if out.get("xfp"):
+            src["xfp"]["scoring_rec"] = out["xfp"].get("scoring_rec")
+        out["_sources"] = src
+        return out
+    return collect
+
+
+def _props_mod():
+    from sleeper_auction.feeds import props
+    return props
+
+
+def _projections():
+    from sleeper_auction.feeds import projections
+    return projections
+
+
+def _consensus(week, league_id):
+    """Consensus of the cached projection sources; kicks the prefetcher when
+    a source is missing so the next load has it. Never scrapes here."""
+    from sleeper_auction.feeds import prefetch, scoring
+    from sleeper_auction.feeds.projections import consensus
+    res, errs = _projections().fetch_all(SEASON, week, cache_only=True)
+    if any("CacheMiss" in e for e in errs.values()):
+        prefetch.kick(SEASON, week)
+    sc = scoring.league_scoring(league_id) if league_id else scoring.HALF_PPR
+    c = consensus.build(SEASON, week, sc, res)
+    c["missing"] = sorted(errs)
+    return c
+
+
+def _final_proj(fd, pid, pos, pj):
+    """(final projection, props view, basis, consensus row) for one player.
+
+    feeds.blend: props (weighted by coverage) over the consensus median, else
+    Sleeper. When Sleeper has no projection the player is usually out, and
+    neither a stale prop nor another site's line resurrects him.
+    """
+    sl = (pj or {}).get("proj")
+    cons = ((fd.get("consensus") or {}).get("players") or {}).get(str(pid))
+    pp = None
+    try:
+        filler = (cons or {}).get("stats") or (pj or {}).get("stats")
+        if fd.get("props") and filler:
+            pp = _props_mod().player_props(fd["props"], pid, pos, filler, fd.get("scoring"))
+    except Exception:
+        pp = None
+    if sl is None:
+        return None, pp, None, cons
+    from sleeper_auction.feeds import blend
+    b = blend.final(sl, cons, pp)
+    return b["value"], pp, dict(b["basis"], weights=b["weights"]), cons
+
+
+def _cw_pos(pid):
+    try:
+        from sleeper_auction.feeds import ids
+        return (ids.crosswalk()["info"].get(str(pid)) or {}).get("pos")
+    except Exception:
+        return None
+
+
+def _merge_lines(lines, sched):
+    """ESPN lines, filled from the nflverse schedule where ESPN has none.
+
+    ESPN is live, so it wins when both exist; a gap over 1.5 points is
+    recorded as line_sources_disagree. Same sign convention on both sides:
+    favourite negative.
+    """
+    out = dict(lines or {})
+    for team, g in (sched or {}).items():
+        cur = out.get(team)
+        if not cur or cur.get("implied") is None:
+            out[team] = {"opp": g["opp"], "home": g["home"], "total": g["total"],
+                         "spread": g["spread"], "implied": g["implied"],
+                         "kickoff": (cur or {}).get("kickoff") or g.get("kickoff_utc"),
+                         "favored": (g["spread"] < 0) if g.get("spread") else None,
+                         "line_source": "nflverse"}
+            continue
+        cur = dict(cur)
+        if not cur.get("kickoff"):
+            cur["kickoff"] = g.get("kickoff_utc")
+        if cur.get("implied") is not None and g.get("implied") is not None \
+                and abs(cur["implied"] - g["implied"]) > 1.5:
+            cur["line_sources_disagree"] = {"espn": cur["implied"], "nflverse": g["implied"]}
+        out[team] = cur
+    return out
+
+
+def _usage_view(fd, pid):
+    u = ((fd.get("usage") or {}).get("players") or {}).get(str(pid))
+    if not u:
+        return None
+    return {"tgt_share": u.get("tgt_share"), "tgt_share_recent": u.get("tgt_share_recent"),
+            "air_share": u.get("air_share"), "wopr": u.get("wopr"), "adot": u.get("adot"),
+            "carry_share": u.get("carry_share"), "carry_share_recent": u.get("carry_share_recent"),
+            "targets_recent_pg": u.get("targets_recent_pg"),
+            "trend_tgt": u.get("trend_tgt"), "games": u.get("games"),
+            "team_changed": u.get("team_changed") or None,
+            "season": (fd.get("usage") or {}).get("season")}
+
+
+def _practice_view(fd, pid):
+    p = ((fd.get("practice") or {}).get("players") or {}).get(str(pid))
+    if not p:
+        return None
+    out = {"trajectory": p.get("trajectory") or [], "report_status": p.get("report_status"),
+           "rest": p.get("rest") or False, "injury": p.get("injury")}
+    if p.get("sleeper_note"):
+        out["note"] = p["sleeper_note"]
+    return out
+
+
+def _xfp_view(fd, pid):
+    x = ((fd.get("xfp") or {}).get("players") or {}).get(str(pid))
+    if not x:
+        return None
+    return {"xfp_pg": x["xfp_pg"], "fp_pg": x["fp_pg"], "diff_pg": x.get("diff_pg"),
+            "xtd_pg": x.get("xtd_pg"), "td_pg": x.get("td_pg"), "games": x["games"]}
+
+
+def _ctx_view(fd, pid, only_extreme=False):
+    """PFR/NGS context. With only_extreme, None unless a value is top/bottom 10%."""
+    c = ((fd.get("ctx") or {}).get("players") or {}).get(str(pid))
+    if not c or (only_extreme and not c.get("extreme")):
+        return None
+    keep = ("separation", "cushion", "yac_oe", "drop_pct", "drops", "ryoe_att", "rush_eff",
+            "yaco_att", "ybc_att", "btk_per_att", "broken_tackles", "stacked_box_pct",
+            "extreme", "pct")
+    return {k: c[k] for k in keep if c.get(k) is not None}
+
+
+def _rz_view(fd, pid):
+    r = ((fd.get("redzone") or {}).get("players") or {}).get(str(pid))
+    if not r:
+        return None
+    return {"rz_share": r.get("rz_share"), "gl_carries": r.get("gl_carries"),
+            "rz_carries": r.get("rz_carries"), "rz_targets": r.get("rz_targets")}
+
+
 # ------------------------------------------------------------------ slate
 
-def _snaps_for(snaps, name, current_team):
+def _snaps_for(snaps, name, current_team, pid=None):
     """Snap history, flagged when it was earned on a different team.
 
     A player who changed teams carries a snap share that describes a role he no
     longer has. Left in place because the raw usage is still informative, but
     marked so neither the UI nor the model reads it as current.
     """
-    v = snaps["players"].get(db.nname(name or ""))
+    v = (snaps.get("by_id") or {}).get(str(pid)) if pid else None
+    v = v or snaps["players"].get(db.nname(name or ""))
     if not v:
         return None
     v = dict(v)
@@ -482,7 +739,11 @@ def build_slate(draft_id, roster_id, week):
         raise SystemExit("No players found for roster_id %s in league %s"
                          % (roster_id, league_id_early))
 
-    lines = vegas(week)
+    collect = _start_feeds(week, db.nteam, league_id_early)
+    try:
+        lines = vegas(week)
+    except Exception:
+        lines = {}
     proj = week_projections(week)
     vol = volatility()
     inj = injuries()
@@ -493,6 +754,9 @@ def build_slate(draft_id, roster_id, week):
     depth = depth_charts()
     league_id = (st["draft"] or {}).get("league_id")
     mu = league_matchup(league_id, roster_id, week) if league_id else None
+    fd = collect()
+    sched = fd.get("schedule") or {}
+    lines = _merge_lines(lines, sched)
 
     players = []
     for pk in mine:
@@ -501,7 +765,10 @@ def build_slate(draft_id, roster_id, week):
         team = db.nteam(pk["team"] or base.get("team"))
         ln = lines.get(team) or {}
         opp_line = lines.get(ln.get("opp")) or {}
-        wx = weather(team if ln.get("home") else ln.get("opp"))
+        wx = weather(team if ln.get("home") else ln.get("opp"),
+                     ln.get("kickoff"), sched.get(team))
+        pfinal, pprops, pbasis, pcons = _final_proj(fd, pid, pk["pos"] or base.get("pos"),
+                                                    proj.get(pid))
         players.append({
             "id": pid, "name": pk["name"] or base.get("name"),
             "pos": pk["pos"] or base.get("pos"), "team": team,
@@ -511,7 +778,13 @@ def build_slate(draft_id, roster_id, week):
             "season_tier": base.get("tier"),
             "value_conf": base.get("value_conf"),
             "proj_source": base.get("proj_source"),
-            "proj": (proj.get(pid) or {}).get("proj"),
+            "proj": pfinal,
+            "proj_sleeper": (proj.get(pid) or {}).get("proj"),
+            "proj_basis": pbasis,
+            "props": pprops,
+            "consensus": {k: pcons.get(k) for k in ("median", "lo", "hi", "sd", "n",
+                                                    "by_source", "flags")} if pcons else None,
+            "ecr": ((fd.get("ecr") or {}).get("players") or {}).get(str(pid)),
             "season_proj": base.get("proj"),
             "opponent": ln.get("opp"), "home": ln.get("home"),
             "game_total": ln.get("total"), "spread": ln.get("spread"),
@@ -520,7 +793,7 @@ def build_slate(draft_id, roster_id, week):
             "volatility": vol.get(pid),
             "dvp": ((dvp["teams"].get(ln.get("opp")) or {}).get(pk["pos"] or "")
                     if ln.get("opp") else None),
-            "snaps": _snaps_for(snaps, pk["name"], team),
+            "snaps": _snaps_for(snaps, pk["name"], team, pid),
             "depth": depth.get(pid),
             "injury": inj.get(db.nname(pk["name"] or "")),
             "weather": wx,
@@ -531,8 +804,24 @@ def build_slate(draft_id, roster_id, week):
             "played": (act.get(pid) or {}).get("played"),
             "snaps_played": (act.get(pid) or {}).get("snaps"),
             "targets": (act.get(pid) or {}).get("targets"),
+            "usage": _usage_view(fd, pid),
+            "practice": _practice_view(fd, pid),
+            "xfp": _xfp_view(fd, pid),
+            "redzone": _rz_view(fd, pid),
+            "efficiency_ctx": _ctx_view(fd, pid, only_extreme=True),
         })
     players.sort(key=lambda p: -(p["proj"] or 0))
+    # Reported news (RotoWire via ESPN, and RotoWire's RSS), two items each.
+    # Cache-only: missing players are fetched in the background for next load.
+    try:
+        from sleeper_auction.feeds import news as newsfeed
+        nw = newsfeed.player_news([p["id"] for p in players]
+                                  + [x for x in (mu or {}).get("opp_starters") or []
+                                     if x and x != "0"])
+    except Exception:
+        nw = {}
+    for pl in players:
+        pl["news"] = nw.get(str(pl["id"])) or None
 
     for pl in players:
         if pl.get("actual") is not None and pl.get("proj") is not None:
@@ -543,6 +832,17 @@ def build_slate(draft_id, roster_id, week):
             pl["vs_proj"] = None
             pl["vs_proj_pct"] = None
     phase = week_phase(players, gs)
+    if phase == "post":
+        # Which signals actually predicted it: every source's error for my
+        # players this week, from the pre-kickoff snapshots (feeds/calibrate).
+        try:
+            from sleeper_auction.feeds import calibrate
+            ce = calibrate.week_errors(SEASON, week, [p["id"] for p in players])
+            for pl in players:
+                if ce.get(str(pl["id"])):
+                    pl["source_errors"] = ce[str(pl["id"])]
+        except Exception:
+            pass
     started = [p for p in players if p["starting"]]
     locked_pts = round(sum(p["actual"] or 0 for p in started if p["locked"]), 1)
     for pl in players:
@@ -579,7 +879,7 @@ def build_slate(draft_id, roster_id, week):
                 tot += a
                 opp_locked += a
             else:
-                tot += (proj.get(x) or {}).get("proj", 0) or 0.0
+                tot += _final_proj(fd, x, info.get("pos") or (_cw_pos(x)), proj.get(x))[0] or 0.0
         opp_total = round(tot, 1)
     return {"draft_id": draft_id, "phase": phase, "locked_points": locked_pts,
             "opp_locked_points": round(opp_locked, 1),
@@ -591,7 +891,9 @@ def build_slate(draft_id, roster_id, week):
             "week": week, "season": SEASON, "roster_id": roster_id,
             "players": players, "matchup": mu,
             "dvp_source": {"season": dvp["season"], "weeks": dvp["weeks"]},
-            "snap_source": {"season": snaps["season"]},
+            "snap_source": {"season": snaps["season"],
+                            "by_id": bool(snaps.get("by_id"))},
+            "feed_sources": fd.get("_sources"),
             "my_projected": my_total, "opp_projected": opp_total,
             "league": st["league"], "team_name": next(
                 (t["owner"] for t in st["teams"] if t["roster_id"] == roster_id), "me")}
@@ -755,6 +1057,66 @@ projection instead; do not present it as current.
 between them. A rising share is the strongest start signal in this data; a \
 falling one is the earliest sign a projection is stale. Snap share for a \
 committee back matters more than his projection.
+- "usage" is target share (the fraction of the team's targets), air-yards \
+share and WOPR (1.5 x target share + 0.7 x air-yards share), for the season \
+and the last three games, recomputed from summed targets rather than averaged \
+per game. For receivers it is a better usage read than snap share, because a \
+receiver can be on the field and not be targeted. A rising target share ahead \
+of a soft matchup is a start signal. Weigh it against "games": two games is a \
+hint, not a role. "carry_share" is the same for rushing attempts.
+- "practice.trajectory" is the week's practice participation in order, built \
+from snapshots (DNP = did not participate, LP = limited, FP = full). DNP -> LP \
+-> FP is a player on track. FP -> LP or LP -> DNP late in the week is the worst \
+sign in the data. A single entry means only the latest report was seen. \
+"rest": true is a scheduled veteran rest day and means nothing. \
+"report_status" is the official game designation, usually published Friday; \
+blank means no designation.
+- "xfp" is expected half-PPR points per game from the quality of the \
+opportunities he got (targets by depth, carries by field position), from the \
+ffopportunity model. "diff_pg" well above zero means he has been scoring \
+above his opportunity, usually through touchdowns, and should be expected to \
+regress. Well below zero means the role is better than the results. It is \
+null under two games because one game of it is noise.
+- "redzone" is his share of the team's red-zone opportunities (carries and \
+targets inside the 20), and his goal-line carries (inside the 5), where \
+touchdowns come from.
+- "efficiency_ctx" appears only when one of his rates is in the best or \
+worst 10% at his position: NGS separation, cushion and YAC over expected for \
+receivers, rush yards over expected per attempt for backs, PFR drops, yards \
+after contact and broken tackles. It is descriptive context, not a \
+projection: it explains WHY a rate is high or low, and it does not override \
+the projection or the matchup.
+- "consensus" is the median of up to six independent projection sources \
+(Sleeper/RotoWire, ESPN, CBS, FanDuel/numberFire, FFToday, FantasySharks), \
+each scored with this league's rules. "sd", "lo" and "hi" say how much they \
+disagree. A wide range means the projection itself is uncertain, which is \
+different from the player being volatile. A "source_thinks_out" flag means \
+one site projects him near zero while the others do not -- usually that site \
+has news the others have not priced in. Treat it as a lead.
+- "ecr" is FantasyPros' weekly expert consensus RANK (not points) with its \
+start/sit grade; "rank_std" is how much the experts disagree.
+- "props" is what the betting market implies for this player this week, \
+converted to half-PPR points from yardage, reception and touchdown markets \
+(Kalshi ladders and sportsbook over/unders). Markets move on news faster than \
+projections do. A prop mean well below the projection usually means the \
+market has priced in an injury or a role change, so treat that gap as \
+information. "coverage" is how much of the number came from markets rather \
+than the projection. "anytime_td" is the market's probability that he scores. \
+"p10"/"p90" are this week's market floor and ceiling. A starter with NO props \
+posted can itself be a signal: books pull lines when a player's status is \
+uncertain. Say so, don't assume. "proj" is the final number: props weighted \
+0.55 when they cover 70%+ of the line (0.25 when 30-70%) over the consensus \
+median (Sleeper alone if no consensus); "proj_basis" gives the weights and \
+whether they were chosen or calibrated; "proj_sleeper" is Sleeper's own \
+number.
+- "news" is REPORTED news for the player (RotoWire blurbs via ESPN, and \
+RotoWire's feed), up to two items from the last seven days, each dated. A \
+report from Tuesday is superseded by Friday's practice status; say so when \
+they conflict rather than trusting the older item.
+- "feed_sources" at the top level says which season and how many weeks each \
+of those was computed from. A line from "line_source": "nflverse" came from \
+the schedule file because ESPN had none; "line_sources_disagree" means the \
+two books differ by more than 1.5 points of implied total.
 
 PHASE. The payload's "phase" says which question you are answering, and it \
 changes the job completely:
@@ -772,7 +1134,10 @@ a deficit argues for ceiling, more sharply than before kickoff because there \
 are fewer games left to make it up.
 - "post": every game is done. No verdicts to give. Write the retrospective: who \
 beat their projection and who missed, which of the pre-game signals actually \
-predicted it, and which misled. Be specific about what was knowable in advance \
+predicted it, and which misled. "source_errors", where present, is each \
+source's pre-kickoff projection minus what he actually scored (sleeper, \
+consensus, props, final, and each site as "src:<name>"), so "which signal \
+was right" is answered from data rather than narrative. Be specific about what was knowable in advance \
 versus what was variance -- most single-week misses are variance, and saying so \
 is more honest than inventing a narrative.
 
@@ -1080,6 +1445,7 @@ def ai_analyze(slate, pos, api_key=None, wrcb=None, refresh=False):
         "games_total": slate.get("games_total"),
         "dvp_from_season": slate.get("dvp_source", {}).get("season"),
         "snaps_from_season": slate.get("snap_source", {}).get("season"),
+        "feed_sources": slate.get("feed_sources"),
         "roster": [{k: v for k, v in p.items() if k != "id"}
                    for p in slate["players"]],
     }, default=str)
@@ -1107,10 +1473,10 @@ def report(slate, pos, ai=None):
                                            slate["opp_projected"]))
          + "  ->  posture: %s" % pos["mode"].upper(),
          "  " + pos["guidance"], ""]
-    o.append("%-1s %-22s %-4s %-6s %-7s %-6s %-7s %-13s %-9s %s"
-             % ("", "PLAYER", "POS", "PROJ", "ACTUAL", "IMPL", "VS",
-                "FLOOR/CEIL", "DvP", "NOTE"))
-    o.append("-" * 112)
+    o.append("%-1s %-22s %-4s %-6s %-6s %-7s %-6s %-7s %-15s %-9s %-8s %s"
+             % ("", "PLAYER", "POS", "PROJ", "MKT", "ACTUAL", "IMPL", "VS",
+                "FLOOR/CEIL", "DvP", "TGT%", "NOTE"))
+    o.append("-" * 130)
     for p in slate["players"]:
         v = p["volatility"] or {}
         dv = p.get("dvp") or {}
@@ -1137,6 +1503,16 @@ def report(slate, pos, ai=None):
         if dp.get("order"):
             note.append("depth %s%s" % (dp["order"],
                                         "/" + dp["slot"] if dp.get("slot") else ""))
+        pr = p.get("practice") or {}
+        if pr.get("rest") and not pr.get("report_status"):
+            note.append("rest day")
+        elif pr.get("trajectory") and (set(pr["trajectory"]) != {"FP"}
+                                       or pr.get("report_status")):
+            note.append("practice " + ">".join(pr["trajectory"]))
+        xf = p.get("xfp") or {}
+        if xf.get("diff_pg") is not None and abs(xf["diff_pg"]) >= 3 and xf.get("games", 0) >= 2:
+            note.append("xFP %+.1f" % xf["diff_pg"])
+        tg = re.sub(r"<[^>]+>", "", _tgt_cell(p)).replace("&mdash;", "-")
         act = "-"
         if p.get("dnp"):
             act = "DNP"
@@ -1145,15 +1521,18 @@ def report(slate, pos, ai=None):
                               (" %+.0f" % p["vs_proj"]) if p.get("vs_proj") else "")
         elif p.get("locked"):
             act = "live"
-        o.append("%-1s %-22s %-4s %-6s %-7s %-6s %-7s %-13s %-9s %s" % (
+        fc = [re.sub(r"<[^>]+>", "", str(x)) for x in _floor_ceil(p, "-")]
+        o.append("%-1s %-22s %-4s %-6s %-6s %-7s %-6s %-7s %-15s %-9s %-8s %s" % (
             "*" if p["starting"] else "", (p["name"] or "?")[:22], p["pos"],
             p["proj"] if p["proj"] is not None else "-",
+            ("%.1f" % p["props"]["mean"]) if (p.get("props") or {}).get("mean") is not None
+            else "-",
             act,
             p["implied_total"] if p["implied_total"] is not None else "-",
             ("%s%s" % ("@" if not p["home"] else "", p["opponent"] or "?")),
-            "%s / %s" % (v.get("floor", "-"), v.get("ceiling", "-")),
+            "%s / %s" % tuple(fc),
             ("#%s %s" % (dv["rank"], dv["ppg"]) if dv.get("rank") else "-"),
-            ", ".join(note)))
+            tg, ", ".join(note)))
     o.append("")
     o.append("* = in your Sleeper starting lineup | ACTUAL shows points scored with"
              " the gap vs projection; DNP = not active | DvP = opponent rank"
@@ -1245,6 +1624,68 @@ setTimeout(poll,2000);
 })();</script>"""
 
 
+def _data_panel(names=("nflverse", "ffopportunity", "ids", "dynastyprocess",
+                        "league")):
+    try:
+        from sleeper_auction import feeds
+        return feeds.rail_html(names)
+    except Exception:
+        return ""
+
+
+def _esc(s):
+    import html as _h
+    return _h.escape(str(s or ""), quote=True)
+
+
+def _proj_cell(p):
+    if p.get("proj") is None:
+        return "&mdash;"
+    c = p.get("consensus") or {}
+    sub = ""
+    if c.get("n"):
+        sub = "<div class='mut' style='font-size:10px;font-weight:400' title='%s'>%d src &middot; %s&ndash;%s</div>" % (
+            ", ".join("%s %s" % kv for kv in sorted((c.get("by_source") or {}).items())),
+            c["n"], c.get("lo"), c.get("hi"))
+    return "%s%s" % (p["proj"], sub)
+
+
+def _mkt_cell(p):
+    pp = p.get("props") or {}
+    if pp.get("mean") is None:
+        return "&mdash;"
+    dot = "&#9679;" if pp.get("coverage", 0) >= 0.7 else "&#9680;"
+    return '<span title="market mean, coverage %d%%%s">%s %.1f</span>' % (
+        round(100 * pp.get("coverage", 0)),
+        ", anytime TD %d%%" % round(100 * pp["anytime_td"]) if pp.get("anytime_td") else "",
+        dot, pp["mean"])
+
+
+def _floor_ceil(p, dash):
+    """This week's market p10/p90 when props exist, else last season's."""
+    pp = p.get("props") or {}
+    if pp.get("p10") is not None and pp.get("p90") is not None:
+        return ("%s" % pp["p10"], "%s <small class='mut'>mkt</small>" % pp["p90"])
+    v = p.get("volatility") or {}
+    return (v.get("floor", dash), v.get("ceiling", dash))
+
+
+def _tgt_cell(p):
+    u = p.get("usage") or {}
+    if p.get("pos") not in ("RB", "WR", "TE"):
+        return "&mdash;"
+    if p.get("pos") == "RB" and u.get("carry_share_recent") is not None:
+        v, tr, lab = u["carry_share_recent"], None, " car"
+        if u.get("carry_share") is not None:
+            tr = 100 * (u["carry_share_recent"] - u["carry_share"])
+    elif u.get("tgt_share_recent") is not None:
+        v, tr, lab = u["tgt_share_recent"], u.get("trend_tgt"), ""
+    else:
+        return "&mdash;"
+    cls = "pl" if (tr or 0) >= 8 else "mn" if (tr or 0) <= -8 else ""
+    return '<span class="%s">%d%%%s</span>' % (cls, round(100 * v), lab)
+
+
 def html_report(slate, pos, ai=None, job_id=None):
 
     rows = []
@@ -1275,16 +1716,37 @@ def html_report(slate, pos, ai=None, job_id=None):
         if dp.get("order"):
             notes.append("depth %s%s" % (dp["order"],
                                          "/" + dp["slot"] if dp.get("slot") else ""))
+        pr = p.get("practice") or {}
+        if pr.get("rest") and not pr.get("report_status"):
+            notes.append('<span class="mut">rest day</span>')
+        elif pr.get("trajectory") and (set(pr["trajectory"]) != {"FP"}
+                                       or pr.get("report_status")):
+            notes.append("<span title='practice this week%s'>%s</span>" % (
+                " (rest day)" if pr.get("rest") else "",
+                "&middot;".join('<b class="%s">%s</b>' % (
+                    {"FP": "pl", "LP": "vol", "DNP": "mn"}.get(x, "mut"), x)
+                    for x in pr["trajectory"])))
+        if p.get("news"):
+            n0 = p["news"][0]
+            notes.append('<span class="vol" title="%s">&#128240; %s</span>' % (
+                _esc("%s -- %s" % (n0.get("published") or "", n0.get("text") or "")),
+                _esc((n0.get("published") or "")[5:10])))
+        xf = p.get("xfp") or {}
+        if xf.get("diff_pg") is not None and abs(xf["diff_pg"]) >= 3 and xf.get("games", 0) >= 2:
+            notes.append('<b class="%s" title="actual %s vs expected %s pts/g">xFP %+.1f</b>'
+                         % ("mn" if xf["diff_pg"] > 0 else "pl", xf["fp_pg"], xf["xfp_pg"],
+                            xf["diff_pg"]))
         rows.append(
             '<tr class="%s"><td>%s</td><td class="nm">%s</td>'
             '<td><span class="pos %s">%s</span></td><td class="big">%s</td>'
-            '<td class="%s">%s</td>'
+            '<td class="mut">%s</td><td class="%s">%s</td>'
             '<td>%s</td><td class="mut">%s%s</td><td class="mut">%s</td>'
             '<td class="mut">%s / %s</td><td class="%s">%s</td>'
-            '<td class="mut">%s</td><td class="mut">%s</td></tr>' % (
+            '<td class="mut">%s</td><td class="mut">%s</td><td class="mut">%s</td></tr>' % (
                 "st" if p["starting"] else "", "&#9733;" if p["starting"] else "",
                 p["name"], p["pos"], p["pos"],
-                p["proj"] if p["proj"] is not None else "&mdash;",
+                _proj_cell(p),
+                _mkt_cell(p),
                 ("pl" if (p.get("vs_proj") or 0) > 0 else
                  "mn" if p.get("actual") is not None else "mut"),
                 ("DNP" if p.get("dnp") else
@@ -1294,12 +1756,13 @@ def html_report(slate, pos, ai=None, job_id=None):
                 p["implied_total"] if p["implied_total"] is not None else "&mdash;",
                 "@" if not p["home"] else "", p["opponent"] or "?",
                 p["spread"] if p["spread"] is not None else "&mdash;",
-                v.get("floor", "&mdash;"), v.get("ceiling", "&mdash;"),
+                *_floor_ceil(p, "&mdash;"),
                 ("pl" if (dv.get("rank") or 99) >= 22 else
                  "mn" if (dv.get("rank") or 0) <= 10 else "mut"),
                 ("#%s &middot; %s" % (dv["rank"], dv["ppg"])
                  if dv.get("rank") else "&mdash;"),
                 ("%s%%" % sn["recent_pct"] if sn.get("recent_pct") else "&mdash;"),
+                _tgt_cell(p),
                 " &middot; ".join(notes)))
 
     cards = ai_cards(ai)
@@ -1314,6 +1777,7 @@ def html_report(slate, pos, ai=None, job_id=None):
                                   ("me", slate.get("roster_id") or ""))
                      if v)
     return SS_TPL.replace("__OPTS__", opts).replace("__HIDDEN__", hidden) \
+        .replace("__DATA__", _data_panel()) \
         .replace("__ROWS__", "".join(rows)).replace("__AI__", cards) \
         .replace("__TEAM__", str(slate["team_name"])).replace("__WK__", str(slate["week"])) \
         .replace("__MODE__", pos["mode"].upper()).replace("__GUIDE__", pos["guidance"]) \
@@ -1379,7 +1843,7 @@ tr.st td{background:#111b26}
 @keyframes sp{to{transform:rotate(360deg)}}
 @media(max-width:900px){.rail{flex:1 1 100%}}
 </style></head><body>
-<div class="nav"><a href="#" data-p="/sitstart">Sit / Start</a><a href="#" data-p="/waivers">Waivers</a><a href="#" data-p="/lookahead">Look Ahead</a><a href="#" data-p="/board">Draft board</a><a href="#" data-p="/analysis">Analysis</a><span class="navsp"></span><form class="wksel" method="get" action="">__HIDDEN__week&nbsp;<select name="week" onchange="this.form.submit()">__OPTS__</select><noscript><button type="submit">go</button></noscript></form></div>
+<div class="nav"><a href="#" data-p="/sitstart">Sit / Start</a><a href="#" data-p="/waivers">Waivers</a><a href="#" data-p="/lookahead">Look Ahead</a><a href="#" data-p="/trades">Trades</a><a href="#" data-p="/board">Draft board</a><a href="#" data-p="/analysis">Analysis</a><span class="navsp"></span><form class="wksel" method="get" action="">__HIDDEN__week&nbsp;<select name="week" onchange="this.form.submit()">__OPTS__</select><noscript><button type="submit">go</button></noscript></form></div>
 <script>(function(){var qs=location.search||'';
 var here=location.pathname==='/'?'/sitstart':location.pathname;
 document.querySelectorAll('.nav a').forEach(function(a){a.href=a.dataset.p+qs;
@@ -1390,18 +1854,28 @@ document.querySelectorAll('.nav a').forEach(function(a){a.href=a.dataset.p+qs;
 <div class="mut" style="margin-top:4px">__GUIDE__</div></div></div>
 <div class="wrap">
  <div class="main"><div class="panel" style="padding:0"><table>
-  <thead><tr><th></th><th>Player</th><th>Pos</th><th>Proj</th><th>Actual</th><th>Team total</th>
+  <thead><tr><th></th><th>Player</th><th>Pos</th><th>Proj</th><th>Mkt</th><th>Actual</th><th>Team total</th>
   <th>Opp</th><th>Spread</th><th>Floor / Ceil</th><th>DvP</th><th>Snap%</th>
-  <th>Flags</th></tr></thead>
+  <th>Tgt%</th><th>Flags</th></tr></thead>
   <tbody>__ROWS__</tbody></table></div>
   <div class="mut" style="font-size:12px">&#9733; = in your Sleeper starting lineup &middot;
   <b>Team total</b> is the Vegas implied points for that player's offense &middot;
-  <b>Floor / Ceil</b> are 20th/80th percentile weekly half-PPR scores &middot;
+  <b>Proj</b> is the consensus of up to six projection sources scored with your league's
+  rules, blended with the betting market (weight 0.55 when props cover 70%+ of the line);
+  the line under it is how many sources and their range &middot; <b>Mkt</b> is the betting-market mean in half-PPR points
+  (&#9679; full coverage, &#9680; partial) &middot;
+  <b>Floor / Ceil</b> are this week's market 10th/90th percentiles when marked <i>mkt</i>,
+  otherwise last season's 20th/80th percentile weekly half-PPR scores &middot;
   <b>DvP</b> is the opponent's rank (1 = toughest of 32) and half-PPR points per game
   allowed to this position, computed from completed games &middot;
-  <b>Snap%</b> is last-3-game snap share; green/red flags a shift of 8+ points</div>
+  <b>Snap%</b> is last-3-game snap share; green/red flags a shift of 8+ points &middot;
+  <b>Tgt%</b> is last-3-game share of team targets (<i>car</i> = share of team carries, for
+  backs), green/red when it moved 8+ points &middot; <b>DNP&middot;LP&middot;FP</b> is this
+  week's practice trajectory &middot; <b>xFP &plusmn;x</b> is actual minus expected points per
+  game from opportunity quality (red = running hot, due to regress; green = role better than
+  results), shown at 3+ pts over 2+ games</div>
  </div>
- <div class="rail"><div id="ai-slot">__AI__</div></div>
+ <div class="rail"><div id="ai-slot">__AI__</div>__DATA__</div>
 </div></body></html>"""
 
 
@@ -1409,13 +1883,14 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--draft", required=True)
     ap.add_argument("--me", type=int, required=True)
-    ap.add_argument("--week", type=int, default=1)
+    ap.add_argument("--week", type=int, default=None,
+                    help="default: the current NFL week")
     ap.add_argument("--no-ai", action="store_true")
     ap.add_argument("--wrcb", action="append", default=[],
                     help="URL or path to a WR/CB matchup chart image (repeatable)")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
-    sl = build_slate(args.draft, args.me, args.week)
+    sl = build_slate(args.draft, args.me, args.week or db.current_week())
     ps = posture(sl)
     ai = None if args.no_ai else ai_analyze(sl, ps, wrcb=args.wrcb)
     if args.json:

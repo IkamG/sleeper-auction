@@ -730,6 +730,21 @@ def start_job(job_id, work, render):
         return JOBS["items"][job_id]
 
 
+def current_week(q=None):
+    """?week= when given, else the current NFL week from Sleeper's state/nfl
+    (clamped to 1-18, so preseason reads as week 1). Pages used to default to
+    week 1 all season."""
+    w = (q or {}).get("week")
+    if w and str(w).isdigit():
+        return int(w)
+    try:
+        from sleeper_auction import sleeper as sd
+        st = sd.nfl_state() or {}
+        return max(1, min(18, int(st.get("display_week") or st.get("week") or 1)))
+    except Exception:
+        return 1
+
+
 def ensure_pool():
     with POOL["lock"]:
         if POOL["players"] is None:
@@ -883,13 +898,13 @@ class H(BaseHTTPRequestHandler):
                     return self._send(400, json.dumps(
                         {"error": "need draft id and roster id (?draft=..&me=..)"}))
                 from sleeper_auction import waivers
-                wb = waivers.build_board(did, int(rid), int(q.get("week") or 1),
+                wb = waivers.build_board(did, int(rid), current_week(q),
                                          int(q.get("limit") or 25))
                 job = None
                 ai = None
                 if not q.get("noai"):
                     rf = bool(q.get("refresh"))
-                    jid = "wv-%s-%s-%s" % (did, rid, q.get("week") or 1)
+                    jid = "wv-%s-%s-%s" % (did, rid, current_week(q))
                     if rf:
                         with JOBS["lock"]:
                             JOBS["items"].pop(jid, None)
@@ -910,7 +925,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(
                     200, waivers.html_report(
                         wb, ai,
-                        job_id=("wv-%s-%s-%s" % (did, rid, q.get("week") or 1))
+                        job_id=("wv-%s-%s-%s" % (did, rid, current_week(q)))
                         if job and job["status"] == "pending" else None),
                     "text/html; charset=utf-8")
             if path in ("/sitstart", "/api/sitstart"):
@@ -920,7 +935,7 @@ class H(BaseHTTPRequestHandler):
                     return self._send(400, json.dumps(
                         {"error": "need draft id and roster id (?draft=..&me=..)"}))
                 import sleeper_auction.sitstart as sitstart
-                wk = int(q.get("week") or 1)
+                wk = current_week(q)
                 sl = sitstart.build_slate(did, int(rid), wk)
                 ps = sitstart.posture(sl)
                 import urllib.parse as _up
@@ -971,6 +986,39 @@ class H(BaseHTTPRequestHandler):
                                       "text/plain; charset=utf-8")
                 return self._send(200, analyze.html_report(a),
                                   "text/html; charset=utf-8")
+            if path in ("/trades", "/api/trades"):
+                did = q.get("draft") or ARGS.draft
+                rid = q.get("me") or ARGS.me
+                if not did or not rid:
+                    return self._send(400, json.dumps(
+                        {"error": "need draft id and roster id (?draft=..&me=..)"}))
+                from sleeper_auction import trades
+                tb = trades.build_board(did, int(rid), int(q.get("limit") or 15))
+                job = None
+                ai = None
+                jid = "tr-%s-%s" % (did, rid)
+                if not q.get("noai"):
+                    rf = bool(q.get("refresh"))
+                    if rf:
+                        with JOBS["lock"]:
+                            JOBS["items"].pop(jid, None)
+                    if path == "/api/trades":
+                        ai = trades.ai_analyze(tb, refresh=rf)
+                    else:
+                        job = start_job(jid, lambda: trades.ai_analyze(tb, refresh=rf),
+                                        trades.ai_cards)
+                        if job["status"] != "pending":
+                            ai = job.get("result")
+                if path == "/api/trades":
+                    return self._send(200, json.dumps({"board": tb, "ai": ai}, default=str))
+                if q.get("text"):
+                    return self._send(200, trades.report(tb, ai), "text/plain; charset=utf-8")
+                return self._send(200, trades.html_report(
+                    tb, ai, job_id=jid if job and job["status"] == "pending" else None),
+                    "text/html; charset=utf-8")
+            if path == "/api/feeds":
+                from sleeper_auction import feeds
+                return self._send(200, json.dumps(feeds.status(), default=str))
             if path == "/api/values":
                 return self._send(200, json.dumps({"players": ensure_pool()[:400]}))
             return self._send(404, json.dumps({"error": "not found"}))
@@ -1034,7 +1082,7 @@ tr.poor{opacity:.34}
 .cliff{color:#f85149;font-weight:600}
 #err{display:none;padding:9px 16px;background:#3a1518;color:#f85149;font-size:13px}
 </style></head><body>
-<div class="nav"><a href="#" data-p="/sitstart">Sit / Start</a><a href="#" data-p="/waivers">Waivers</a><a href="#" data-p="/lookahead">Look Ahead</a><a href="#" data-p="/board">Draft board</a><a href="#" data-p="/analysis">Analysis</a><span class="navsp"></span><span class="navmut" id="nav-league"></span></div>
+<div class="nav"><a href="#" data-p="/sitstart">Sit / Start</a><a href="#" data-p="/waivers">Waivers</a><a href="#" data-p="/lookahead">Look Ahead</a><a href="#" data-p="/trades">Trades</a><a href="#" data-p="/board">Draft board</a><a href="#" data-p="/analysis">Analysis</a><span class="navsp"></span><span class="navmut" id="nav-league"></span></div>
 <script>(function(){var qs=location.search||'';
 document.querySelectorAll('.nav a').forEach(function(a){a.href=a.dataset.p+qs;
   if(location.pathname===a.dataset.p)a.className='on';});})();</script>
@@ -1185,4 +1233,17 @@ if __name__ == "__main__":
             sk.close()
         except Exception:
             pass
+    try:
+        # Slow in-season feeds (projection scrapers, FantasyPros ECR) refresh
+        # on a daemon thread; pages only ever read their cache.
+        from sleeper_auction.feeds import prefetch
+        if ARGS.draft:
+            try:
+                prefetch.LEAGUE_ID = (draft_state(ARGS.draft).get("draft") or {}).get(
+                    "league_id")
+            except Exception:
+                pass
+        prefetch.start()
+    except Exception as e:
+        print("  prefetch not started: %s" % e)
     ThreadingHTTPServer((ARGS.host, ARGS.port), H).serve_forever()

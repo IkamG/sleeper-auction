@@ -1,0 +1,8 @@
+game_id,pfr_game_id,season,week,game_type,team,opponent,pfr_player_name,pfr_player_id,carries,rushing_yards_before_contact,rushing_yards_before_contact_avg,rushing_yards_after_contact,rushing_yards_after_contact_avg,rushing_broken_tackles,receiving_broken_tackles
+2026_01_ARI_LAC,202609130sdg,2026,1,REG,ARI,LAC,Tyler Allgeier,AllgTy00,17,45,2.6,16,0.9,3,
+2026_01_ARI_LAC,202609130sdg,2026,1,REG,ARI,LAC,Jeremiyah Love,LoveJe00,11,15,1.4,26,2.4,1,
+2026_01_ARI_LAC,202609130sdg,2026,1,REG,ARI,LAC,Jacoby Brissett,BrisJa00,6,12,2,2,0.3,0,
+2026_02_SEA_ARI,202609200crd,2026,2,REG,ARI,SEA,Jeremiyah Love,LoveJe00,9,18,2,11,1.2,0,
+2026_02_SEA_ARI,202609200crd,2026,2,REG,ARI,SEA,Tyler Allgeier,AllgTy00,5,4,0.8,6,1.2,0,
+2026_02_SEA_ARI,202609200crd,2026,2,REG,ARI,SEA,Zonovan Knight,KnigZo00,2,15,7.5,9,4.5,0,
+2026_02_SEA_ARI,202609200crd,2026,2,REG,ARI,SEA,Jacoby Brissett,BrisJa00,1,6,6,1,1,0,

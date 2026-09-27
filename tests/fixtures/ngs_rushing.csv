@@ -1,0 +1,5 @@
+season,season_type,week,player_display_name,player_position,team_abbr,efficiency,percent_attempts_gte_eight_defenders,avg_time_to_los,rush_attempts,rush_yards,avg_rush_yards,rush_touchdowns,player_gsis_id,player_first_name,player_last_name,player_jersey_number,player_short_name,expected_rush_yards,rush_yards_over_expected,rush_yards_over_expected_per_att,rush_pct_over_expected
+2026,REG,0,Tyler Allgeier,RB,ARI,4.20774647887324,27.2727272727273,2.66415,22,71,3.22727272727273,0,00-0037263,Tyler,Allgeier,22,T.Allgeier,83.4775551778987,-12.4775551778987,-0.567161598995397,0.363636363636364
+2026,REG,0,Jeremiyah Love,RB,ARI,4.42842857142857,0,2.87033333333333,20,70,3.5,1,00-0041027,Jeremiyah,Love,4,J.Love,67.8006181363019,2.19938186369808,0.109969093184904,0.45
+2026,REG,1,Tyler Allgeier,RB,ARI,3.8372131147541,29.4117647058824,2.6670625,17,61,3.58823529411765,0,00-0037263,Tyler,Allgeier,22,T.Allgeier,68.0588321149779,-7.05883211497786,-0.415225418528109,0.411764705882353
+2026,REG,1,Jeremiyah Love,RB,ARI,4.60146341463415,0,3.09336363636364,11,41,3.72727272727273,1,00-0041027,Jeremiyah,Love,4,J.Love,30.9056302069366,10.0943697930634,0.917669981187583,0.545454545454545

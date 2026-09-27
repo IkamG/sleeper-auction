@@ -1,0 +1,13 @@
+game_id,pfr_game_id,season,week,game_type,team,opponent,pfr_player_name,pfr_player_id,rushing_broken_tackles,receiving_broken_tackles,passing_drops,passing_drop_pct,receiving_drop,receiving_drop_pct,receiving_int,receiving_rat
+2026_01_ARI_LAC,202609130sdg,2026,1,REG,ARI,LAC,Trey McBride,McBrTr01,,2,,,1,0.077,0,115.9
+2026_01_ARI_LAC,202609130sdg,2026,1,REG,ARI,LAC,Kendrick Bourne,BourKe00,,0,,,0,0,0,105.7
+2026_01_ARI_LAC,202609130sdg,2026,1,REG,ARI,LAC,Michael Wilson,WilsMi02,,0,,,0,0,0,94.9
+2026_01_ARI_LAC,202609130sdg,2026,1,REG,ARI,LAC,Tyler Allgeier,AllgTy00,,0,,,0,0,0,85.4
+2026_01_ARI_LAC,202609130sdg,2026,1,REG,ARI,LAC,Jeremiyah Love,LoveJe00,,0,,,1,0.25,0,56.2
+2026_01_ARI_LAC,202609130sdg,2026,1,REG,ARI,LAC,Marvin Harrison Jr.,HarrMa09,,0,,,1,0.333,0,75.7
+2026_02_SEA_ARI,202609200crd,2026,2,REG,ARI,SEA,Trey McBride,McBrTr01,,0,,,0,0,0,117.1
+2026_02_SEA_ARI,202609200crd,2026,2,REG,ARI,SEA,Jeremiyah Love,LoveJe00,,0,,,0,0,0,88.9
+2026_02_SEA_ARI,202609200crd,2026,2,REG,ARI,SEA,Tyler Allgeier,AllgTy00,,0,,,0,0,0,85.4
+2026_02_SEA_ARI,202609200crd,2026,2,REG,ARI,SEA,Kendrick Bourne,BourKe00,,0,,,1,0.333,0,72.9
+2026_02_SEA_ARI,202609200crd,2026,2,REG,ARI,SEA,Michael Wilson,WilsMi02,,0,,,0,0,1,0
+2026_02_SEA_ARI,202609200crd,2026,2,REG,ARI,SEA,Marvin Harrison Jr.,HarrMa09,,0,,,0,0,0,39.6

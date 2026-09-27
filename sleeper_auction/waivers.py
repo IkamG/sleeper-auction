@@ -23,6 +23,7 @@ crowd-sourced waiver demand measured rather than opined.
 """
 import argparse
 import json
+import statistics
 import os
 import re
 import sys
@@ -53,6 +54,34 @@ SKILL_POS = ("RB", "WR", "TE")
 # but a board that is half tight ends is a board that has confused "positive
 # number" with "player worth a claim".
 BOARD_CAP = {"TE": 4, "QB": 2}
+
+# Usage upside from nflverse (feeds/nflverse.py). Each is gated on sample size:
+# a share over one game is a box score, not a role.
+RISE_TGT_PP = 8.0        # target share up this many points, last 3 vs season
+RISE_MIN_TGT_PG = 4.0    # ...on at least this many targets a game recently
+RISE_UPSIDE = 1.5
+WOPR_ROLE = 0.45         # weighted opportunity: a real receiving role
+WOPR_UPSIDE = 1.0
+UNLUCKY_DIFF = -3.0      # scoring 3+ pts/g under his opportunity quality
+UNLUCKY_UPSIDE = 1.0
+GL_CARRIES = 2           # goal-line carries (inside the 5)...
+RZ_SHARE = 0.30          # ...or this share of team red-zone chances
+GL_MAX_CARRY_SHARE = 0.5  # ...on a light overall role
+GL_UPSIDE = 0.8
+MIN_GAMES = 2
+
+# Room pricing (feeds/league.py). Once the league has this many completed,
+# non-zero claims, bids scale by what THIS room pays for a contested add
+# relative to ROOM_REF_PCT, the community-convention price of one (the middle
+# of the 4-7% bands above). Chosen, not fitted; clamped so one odd week
+# cannot double every bid.
+ROOM_MIN_CLAIMS = 8
+ROOM_REF_PCT = 5.0
+ROOM_FACTOR_RANGE = (0.6, 1.6)
+# From week 3 the preseason auction value is stale: quality switches to
+# rest-of-season dollars (trade value, else ROS points) mapped onto the same
+# dollar curve.
+ROS_QUALITY_FROM_WEEK = 3
 
 # FAAB bands, as a share of the season budget. These are the shapes the
 # fantasy community converges on; demand and need move a player between bands.
@@ -182,7 +211,8 @@ def score_candidate(fa, mine, flex_bar, league, trend, role=None):
 
     # Quality: season-long value, independent of my roster. This is what stops
     # the model from ignoring a genuinely elite player at a set position.
-    quality = fa.get("season_value") or 0.0
+    quality = (fa.get("quality_value") if fa.get("quality_value") is not None
+               else fa.get("season_value")) or 0.0
 
     hurdle = POS_HURDLE.get(pos, 1.5)
     clears = need_delta >= hurdle
@@ -259,6 +289,26 @@ def score_candidate(fa, mine, flex_bar, league, trend, role=None):
             # for the position, or the tag describes half the league.
             upside += 1.0
             drivers.append("red-zone work on a light role")
+        u = r.get("usage") or {}
+        x = r.get("xfp") or {}
+        z = r.get("redzone") or {}
+        games = u.get("games") or 0
+        if (games >= MIN_GAMES and (u.get("trend_tgt") or 0) >= RISE_TGT_PP
+                and (u.get("targets_recent_pg") or 0) >= RISE_MIN_TGT_PG):
+            upside += RISE_UPSIDE
+            drivers.append("target share up %d pts over last 3" % round(u["trend_tgt"]))
+        if games >= MIN_GAMES and (u.get("wopr") or 0) >= WOPR_ROLE:
+            upside += WOPR_UPSIDE
+            drivers.append("WOPR %.2f" % u["wopr"])
+        if (x.get("games") or 0) >= MIN_GAMES and x.get("diff_pg") is not None \
+                and x["diff_pg"] <= UNLUCKY_DIFF:
+            upside += UNLUCKY_UPSIDE
+            drivers.append("xFP says the role is %.1f pts/g better than results"
+                           % -x["diff_pg"])
+        if ((z.get("gl_carries") or 0) >= GL_CARRIES or (z.get("rz_share") or 0) >= RZ_SHARE) \
+                and (u.get("carry_share") or 0) < GL_MAX_CARRY_SHARE and games >= MIN_GAMES:
+            upside += GL_UPSIDE
+            drivers.append("goal-line work on a light role")
         snap = e.get("snap_share")
         if snap and snap >= 0.55:
             # Being on the field is table stakes, not a thesis -- it separates
@@ -277,7 +327,7 @@ def score_candidate(fa, mine, flex_bar, league, trend, role=None):
             "stream_only": pos in STREAM_POS or (pos == "QB" and not clears)}
 
 
-def faab_bid(cand, budget_left, league):
+def faab_bid(cand, budget_left, league, season_budget=None, room=None, opp_max=None):
     """Recommended FAAB as a percentage of the season budget, and in dollars.
 
     Anchored on measured demand (how many leagues actually added him in the
@@ -326,16 +376,138 @@ def faab_bid(cand, budget_left, league):
         # body, not a claim -- the model flagged the old 0.5x discount here as
         # far too rich and it was right.
         pct = min(pct * 0.35, 2.0)
+    room_factor = None
+    if room and room.get("n", 0) >= ROOM_MIN_CLAIMS and pct > 1.0 \
+            and not cand.get("stream_only"):
+        b = room.get("median_pct_by_band") or {}
+        ref = b.get("contested") or b.get("all")
+        if ref:
+            lo, hi = ROOM_FACTOR_RANGE
+            room_factor = round(max(lo, min(hi, ref / ROOM_REF_PCT)), 2)
+            pct *= room_factor
     pct = max(0.0, min(55.0, pct))
 
     band = next((lbl for lo, hi, lbl in FAAB_BANDS if lo <= pct <= hi), "streamer")
     dollars = None
-    if budget_left is not None:
-        dollars = int(round(budget_left * pct / 100.0))
-    return {"faab_pct": round(pct, 1), "faab_dollars": dollars, "band": band}
+    base = season_budget or budget_left
+    if base is not None:
+        dollars = int(round(base * pct / 100.0))
+        # Never more than you have, and never more than the richest other
+        # team can bid: one dollar over their whole budget already wins.
+        if budget_left is not None:
+            dollars = min(dollars, budget_left)
+        if opp_max is not None:
+            dollars = min(dollars, opp_max + 1)
+    return {"faab_pct": round(pct, 1), "faab_dollars": dollars, "band": band,
+            "room_factor": room_factor}
 
 
 # ------------------------------------------------------------------ board
+
+def _nflverse(league_id, week=None, pool=None):
+    """{usage, xfp, redzone} from feeds.nflverse, fetched together; {} if down."""
+    try:
+        from sleeper_auction.feeds import common, nflverse, scoring
+    except Exception:
+        return {}
+    tasks = {}
+    if common.enabled("nflverse.usage"):
+        tasks["usage"] = lambda: nflverse.usage()
+    if common.enabled("ffopportunity.ep"):
+        tasks["xfp"] = lambda: nflverse.expected_points(
+            rec_value=scoring.rec_value(scoring.league_scoring(league_id)))
+    if common.enabled("ffopportunity.pbp"):
+        tasks["redzone"] = lambda: nflverse.redzone()
+    if common.enabled("projections"):
+        tasks["consensus"] = lambda: sitstart._consensus(week, league_id)
+    if common.enabled("league"):
+        from sleeper_auction.feeds import league as lgfeed
+        tasks["faab"] = lambda: lgfeed.faab(league_id)
+        tasks["room"] = lambda: _room(lgfeed, league_id, week)
+    if common.enabled("values") and int(week or 1) >= ROS_QUALITY_FROM_WEEK:
+        tasks["ros"] = lambda: _ros_values(league_id, week, pool)
+    if common.enabled("props"):
+        from sleeper_auction.feeds import props
+        tasks["props"] = lambda: props.week_props(sitstart.SEASON, week)
+        tasks["scoring"] = lambda: scoring.league_scoring(league_id)
+    res, errs = common.parallel(tasks, timeout=60)
+    for k, e in errs.items():
+        sys.stderr.write("waivers: %s unavailable (%s)\n" % (k, e))
+    res["_sources"] = {k: {"season": v.get("season"), "weeks": v.get("weeks")}
+                       for k, v in res.items() if isinstance(v, dict) and k in
+                       ("usage", "xfp", "redzone")}
+    if res.get("props"):
+        res["_sources"]["props"] = {"as_of": res["props"].get("as_of")}
+    if res.get("consensus"):
+        res["_sources"]["consensus"] = {"sources": res["consensus"].get("sources"),
+                                        "missing": res["consensus"].get("missing")}
+    return res
+
+
+def _room(lgfeed, league_id, week):
+    from sleeper_auction.feeds import ids
+    cw = ids.crosswalk()
+    lg = lgfeed._league(league_id)
+    budget = int((lg.get("settings") or {}).get("waiver_budget") or 0)
+    if not budget:
+        return None
+    hist = lgfeed.faab_history(league_id, week)
+
+    def pos_of(pid):
+        return (cw["info"].get(pid) or {}).get("pos") or ("DEF" if pid.isalpha() else None)
+    return lgfeed.clearing_curve(hist, budget, pos_of)
+
+
+def _ros_values(league_id, week, pool=None):
+    """{sid: {"dollars", "source", "trend30", "ros_pts"}} -- trade value where
+    FantasyCalc has the player, else ROS points, both on the draft dollar
+    curve so "quality" keeps its units."""
+    from sleeper_auction.feeds import scoring, values
+    from sleeper_auction.feeds import league as lgfeed
+    lg = lgfeed._league(league_id)
+    pool = pool or db.value_pool(db.build_pool()[0])
+    out = {}
+    try:
+        tv = values.trade_values(lg, pool)
+    except Exception as e:
+        sys.stderr.write("waivers: trade values unavailable (%s)\n" % e)
+        tv = {}
+    ros = {}
+    try:
+        ros = values.ros_points(sitstart.SEASON, int(week) + 1,
+                                scoring.league_scoring(league_id), cache_only=True,
+                                season_proj={p["sleeper_id"]: p.get("proj") for p in pool
+                                             if p.get("sleeper_id")})
+    except Exception as e:
+        sys.stderr.write("waivers: ROS points unavailable (%s)\n" % e)
+    if not ros or next(iter(ros.values())).get("source") == "season-share":
+        from sleeper_auction.feeds import prefetch
+        prefetch.kick_ros(sitstart.SEASON, int(week) + 1)
+    ros_d = values.ros_dollars({s: v["pts"] for s, v in ros.items()}, pool) if ros else {}
+    for s in set(tv) | set(ros_d):
+        t = tv.get(s) or {}
+        if t.get("dollars") is not None:
+            out[s] = {"dollars": t["dollars"], "source": "trade-value",
+                      "trend30": t.get("trend30"), "disagree": t.get("disagree")}
+        else:
+            out[s] = {"dollars": ros_d.get(s), "source": "ros-points"}
+        if s in ros:
+            out[s]["ros_pts"] = ros[s]["pts"]
+            out[s]["ros_source"] = ros[s]["source"]
+    return out
+
+
+def _props_for(fd, pid, pos, pj):
+    """Market view where one exists. Fringe players rarely have markets, so
+    this is context for the model, never a ranking input."""
+    if not fd.get("props") or not pj or not pj.get("stats"):
+        return None
+    try:
+        from sleeper_auction.feeds import props
+        return props.player_props(fd["props"], pid, pos, pj["stats"], fd.get("scoring"))
+    except Exception:
+        return None
+
 
 def build_board(draft_id, roster_id, week, limit=25):
     """Assemble free agents, my needs, demand and suggested bids. No LLM."""
@@ -378,15 +550,39 @@ def build_board(draft_id, roster_id, week, limit=25):
         roles = {}
         sys.stderr.write("waivers: role data unavailable (%s)\n" % exc)
 
+    # Usage, expected points and red-zone share from nflverse. Optional: with
+    # the feed down every candidate scores exactly as before.
+    fd = _nflverse(league_id, week, pool)
+    for pid in set(roles) | set((fd.get("usage") or {}).get("players") or {}):
+        v = {"usage": sitstart._usage_view(fd, pid), "xfp": sitstart._xfp_view(fd, pid),
+             "redzone": sitstart._rz_view(fd, pid)}
+        if any(v.values()):
+            roles.setdefault(pid, {"tags": (), "gap": None, "eff": None}).update(v)
+
+    cons = (fd.get("consensus") or {}).get("players") or {}
+
     def enrich(pid, p):
         team = p.get("team")
         ln = lines.get(team) or {}
+        sl = (wk.get(pid) or {}).get("proj")
+        c = cons.get(pid) if sl is not None else None
         return {"sleeper_id": pid, "name": p["name"], "pos": p["pos"], "team": team,
                 "season_value": p.get("base"), "season_tier": p.get("tier"),
                 "value_conf": p.get("value_conf"),
-                "wk_proj": (wk.get(pid) or {}).get("proj"),
+                # Consensus of the projection sources where there is one: props
+                # are rare for free agents, so they are context, not the number.
+                "wk_proj": c["median"] if c else sl,
+                "quality_value": ((fd.get("ros") or {}).get(pid) or {}).get("dollars"),
+                "ros_dollars": ((fd.get("ros") or {}).get(pid) or {}).get("dollars"),
+                "ros": (fd.get("ros") or {}).get(pid),
+                "wk_proj_sleeper": sl,
+                "wk_proj_range": [c["lo"], c["hi"], c["n"]] if c else None,
                 "opponent": ln.get("opp"), "implied_total": ln.get("implied"),
                 "depth": depth.get(pid), "injury": inj.get(db.nname(p["name"])),
+                "props": _props_for(fd, pid, p["pos"], wk.get(pid)),
+                "usage": (roles.get(pid) or {}).get("usage"),
+                "xfp": (roles.get(pid) or {}).get("xfp"),
+                "redzone": (roles.get(pid) or {}).get("redzone"),
                 "rostered": pid in taken}
 
     mine_ids = by_roster.get(roster_id) or []
@@ -447,18 +643,38 @@ def build_board(draft_id, roster_id, week, limit=25):
             "unfilled": max(0, slots - len(info["all"])),
             "hurdle": POS_HURDLE.get(pos, 1.5)})
 
-    # Sleeper exposes the league's FAAB budget; spent-to-date is not in the
-    # public API, so this is the season budget and the caller can override.
-    budget_left = None
+    # Real FAAB: rosters carry waiver_budget_used, so this is what is left,
+    # for me and for every opponent (feeds/league.py). Falls back to the
+    # season budget when the feed is down.
+    budget_left = season_budget = opp = room = None
     try:
         lg = db.gj("https://api.sleeper.app/v1/league/%s" % league_id, ttl=600)
         wb = (lg.get("settings") or {}).get("waiver_budget")
         if wb:
-            budget_left = int(wb)
+            budget_left = season_budget = int(wb)
     except Exception:
         pass
+    lf = fd.get("faab") or {}
+    if lf.get(roster_id):
+        budget_left = lf[roster_id]["left"]
+        others = [v["left"] for r, v in lf.items() if r != roster_id]
+        if others:
+            opp = {"max": max(others), "median": int(statistics.median(others)),
+                   "spent_most": max(v["used"] for r, v in lf.items() if r != roster_id)}
+    room = fd.get("room")
     for c in cands[:limit] + streamers:
-        c.update(faab_bid(c, budget_left, state["league"]))
+        c.update(faab_bid(c, budget_left, state["league"], season_budget, room,
+                          (opp or {}).get("max")))
+    news = {}
+    try:
+        from sleeper_auction.feeds import news as newsfeed
+        news = newsfeed.player_news([c["sleeper_id"] for c in cands[:limit]]
+                                    + [p["sleeper_id"] for p in my_players])
+    except Exception as e:
+        sys.stderr.write("waivers: news unavailable (%s)\n" % e)
+    for c in cands[:limit]:
+        if news.get(c["sleeper_id"]):
+            c["news"] = news[c["sleeper_id"]]
 
     return {"week": week, "league_id": league_id, "roster_id": roster_id,
             "draft_id": draft_id,
@@ -466,10 +682,15 @@ def build_board(draft_id, roster_id, week, limit=25):
                                if t["roster_id"] == roster_id), "me"),
             "league": state["league"], "flex_bar": round(flex_bar, 2),
             "faab_budget": budget_left,
+            "faab_season_budget": season_budget,
+            "faab_real": bool(lf.get(roster_id)),
+            "opp_budgets": opp,
+            "room_prices": room,
             "my_roster": my_players, "needs": needs,
             "candidates": cands[:limit], "streamers": streamers,
             "dropped": [{"id": k, **v} for k, v in list(dropped.items())[:10]],
             "free_agent_count": len(cands),
+            "feed_sources": fd.get("_sources"),
             "news": reddit_posts()}
 
 
@@ -527,7 +748,29 @@ gets and does not get many, which is a coaching decision that can reverse. \
 pays only if the starter misses time, rookie-in-line is already top-2 on the \
 depth chart. "snap_share" says whether he is on the field. THIS is the half \
 that wins leagues; need only describes this Sunday.
-- QUALITY is "season_value": his auction value in the abstract. A genuinely \
+  Usage drivers from nflverse also feed upside, each gated on at least two \
+games: a target share up 8+ points over the last three games on 4+ targets a \
+game ("usage.trend_tgt"); a WOPR of 0.45 or more ("usage.wopr", 1.5 x target \
+share + 0.7 x air-yards share: a real receiving role); an "xfp.diff_pg" of -3 \
+or worse (he has scored 3+ points a game less than the quality of his \
+opportunities predicts -- the role is better than the results, which is the \
+buy); and goal-line work on a light overall role ("redzone.gl_carries", \
+"redzone.rz_share"). "feed_sources" says which season and how many weeks \
+those came from. Two games of a share is a hint; say so.
+- "wk_proj" is the consensus median of up to six projection sources scored \
+with this league's rules (Sleeper's own number where no consensus exists); \
+"wk_proj_sleeper" is Sleeper's, and "wk_proj_range" is [low, high, number of \
+sources]. Need, the flex bar and every delta are computed on "wk_proj".
+- "props", when present, is this week's betting-market view in half-PPR \
+points (mean, p10/p90, anytime-TD probability). Most free agents have no \
+market at all; when one does, a market mean well above his projection is a \
+sign the books expect a bigger role this week.
+- QUALITY is "quality" (in draft dollars): from week 3 it is his \
+REST-OF-SEASON value -- FantasyCalc trade value where he has one ("ros.source" \
+"trade-value"), else his rest-of-season projected points ("ros-points") -- \
+mapped onto the draft dollar curve; before that, or with the feeds down, it \
+is the preseason "season_value". "ros.trend30" is his 30-day trade-value \
+move. A genuinely \
 valuable player is worth rostering even without a need, because rosters churn \
 and good players win leagues.
 
@@ -555,6 +798,15 @@ the hurdle is low, because a spare one slots into the flex.
 last 24 hours. That is measured demand, not opinion, and it is what sets the \
 price. High demand on a player who does not help this roster is a reason to \
 let him go, not to chase him.
+- "faab_budget" is what I actually have LEFT (Sleeper's waiver_budget_used), \
+"opp_budgets" what the other teams have left (max, median): nobody can bid \
+more than the max, so no bid needs to exceed it. "room_prices" is what this \
+league has actually paid on completed claims, as a share of the season \
+budget (contested vs uncontested, by position); once it has 8+ claims the \
+computed bids are scaled by it ("room_factor").
+- "news" on a candidate is REPORTED news (RotoWire via ESPN, dated), a \
+different class from the Reddit titles. Newer news supersedes older; a \
+practice report later in the week supersedes both.
 - "faab_pct" is a computed starting bid as a share of the season budget. Adjust \
 it when the payload justifies it and say why. Bid aggressively for a player who \
 genuinely starts; a bench stash is never worth real money.
@@ -580,6 +832,10 @@ def ai_analyze(board, api_key=None, refresh=False):
                        ("name", "pos", "wk_proj", "need_delta", "replaces")}
                       for c in board.get("streamers", [])],
         "news": [n["title"] for n in board["news"][:25]],
+        "feed_sources": board.get("feed_sources"),
+        "faab_budget": board.get("faab_budget"),
+        "opp_budgets": board.get("opp_budgets"),
+        "room_prices": board.get("room_prices"),
     }, default=str)
     key = "waivers-%s-w%s" % (board.get("roster_id"), board.get("week"))
     return sitstart.cached_ai(
@@ -589,11 +845,27 @@ def ai_analyze(board, api_key=None, refresh=False):
 
 # ------------------------------------------------------------------ output
 
+def _budget_text(b):
+    if not b.get("faab_budget") and b.get("faab_budget") != 0:
+        return "unknown"
+    if b.get("faab_real"):
+        t = "$%d left of $%d" % (b["faab_budget"], b.get("faab_season_budget") or 0)
+        o = b.get("opp_budgets")
+        if o:
+            t += " (opponents: most $%d, median $%d)" % (o["max"], o["median"])
+        r = (b.get("room_prices") or {})
+        rb = r.get("median_pct_by_band") or {}
+        if r.get("n"):
+            t += " | room pays %s%% median, %s%% contested (%d claims)" % (
+                rb.get("all"), rb.get("contested"), r["n"])
+        return t
+    return "$%d season budget (spent unknown)" % b["faab_budget"]
+
+
 def report(b, ai=None):
     o = ["%s -- week %s waiver wire" % (b["team_name"], b["week"]),
-         "%d free agents considered | flex bar %.1f pts | FAAB budget %s"
-         % (b["free_agent_count"], b["flex_bar"],
-            ("$%d" % b["faab_budget"]) if b.get("faab_budget") else "unknown"), ""]
+         "%d free agents considered | flex bar %.1f pts | FAAB %s"
+         % (b["free_agent_count"], b["flex_bar"], _budget_text(b)), ""]
     o.append("ROSTER NEEDS")
     for n in b["needs"]:
         st = ", ".join("%s (%.1f)" % (s["name"], s["wk_proj"] or 0)
@@ -728,9 +1000,10 @@ def html_report(b, ai=None, job_id=None):
         .replace("__ROWS__", rows).replace("__NEEDS__", needs) \
         .replace("__STREAM__", streamers) \
         .replace("__NEWS__", news).replace("__AI__", cards) \
+        .replace("__DATA__", sitstart._data_panel()) \
         .replace("__TEAM__", str(b["team_name"])).replace("__WK__", str(b["week"])) \
         .replace("__N__", str(b["free_agent_count"])) \
-        .replace("__BUD__", ("$%d" % b["faab_budget"]) if b.get("faab_budget") else "unknown") \
+        .replace("__BUD__", _budget_text(b)) \
         .replace("__BAR__", "%.1f" % b["flex_bar"])
 
 
@@ -775,13 +1048,13 @@ tr:hover td{background:#1c2128}
 @keyframes sp{to{transform:rotate(360deg)}}
 @media(max-width:900px){.rail{flex:1 1 100%}}
 </style></head><body>
-<div class="nav"><a href="#" data-p="/sitstart">Sit / Start</a><a href="#" data-p="/waivers">Waivers</a><a href="#" data-p="/lookahead">Look Ahead</a><a href="#" data-p="/board">Draft board</a><a href="#" data-p="/analysis">Analysis</a><span class="navsp"></span><form class="wksel" method="get" action="">__HIDDEN__week&nbsp;<select name="week" onchange="this.form.submit()">__OPTS__</select><noscript><button type="submit">go</button></noscript></form></div>
+<div class="nav"><a href="#" data-p="/sitstart">Sit / Start</a><a href="#" data-p="/waivers">Waivers</a><a href="#" data-p="/lookahead">Look Ahead</a><a href="#" data-p="/trades">Trades</a><a href="#" data-p="/board">Draft board</a><a href="#" data-p="/analysis">Analysis</a><span class="navsp"></span><form class="wksel" method="get" action="">__HIDDEN__week&nbsp;<select name="week" onchange="this.form.submit()">__OPTS__</select><noscript><button type="submit">go</button></noscript></form></div>
 <script>(function(){var qs=location.search||'';
 var here=location.pathname==='/'?'/sitstart':location.pathname;
 document.querySelectorAll('.nav a').forEach(function(a){a.href=a.dataset.p+qs;
  if(here===a.dataset.p)a.className='on';});})();</script>
 <div class="hd"><h1>__TEAM__ &mdash; week __WK__ waivers</h1>
-<div class="mut">__N__ free agents &middot; flex bar __BAR__ pts &middot; FAAB budget __BUD__</div></div>
+<div class="mut">__N__ free agents &middot; flex bar __BAR__ pts &middot; FAAB __BUD__</div></div>
 <div class="wrap">
  <div class="main"><div class="panel" style="padding:0"><table>
   <thead><tr><th>Player</th><th>Pos</th><th>Wk proj</th><th>Need</th><th>Upside</th>
@@ -802,6 +1075,7 @@ document.querySelectorAll('.nav a').forEach(function(a){a.href=a.dataset.p+qs;
    about to change.</div></div>
   <div class="panel"><h3>Roster needs</h3>__NEEDS__</div>
   <div class="panel"><h3>r/fantasyfootball</h3>__NEWS__</div>
+  __DATA__
  </div>
 </div></body></html>"""
 
@@ -810,12 +1084,13 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--draft", required=True)
     ap.add_argument("--me", type=int, required=True)
-    ap.add_argument("--week", type=int, default=1)
+    ap.add_argument("--week", type=int, default=None,
+                    help="default: the current NFL week")
     ap.add_argument("--limit", type=int, default=25)
     ap.add_argument("--no-ai", action="store_true")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
-    board = build_board(a.draft, a.me, a.week, a.limit)
+    board = build_board(a.draft, a.me, a.week or db.current_week(), a.limit)
     ai = None if a.no_ai else ai_analyze(board)
     if a.json:
         print(json.dumps({"board": board, "ai": ai}, indent=1, default=str))

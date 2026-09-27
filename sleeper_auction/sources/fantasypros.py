@@ -37,11 +37,11 @@ import re
 import sys
 
 try:
-    from .base import http_get, get_json, record, player_key  # noqa: F401
+    from .base import http_get, get_json, record, player_key, norm_pos  # noqa: F401
 except ImportError:  # standalone: python3 sources/fantasypros.py
     import os
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from base import http_get, get_json, record, player_key  # noqa: F401
+    from base import http_get, get_json, record, player_key, norm_pos  # noqa: F401
 
 NAME = "fantasypros"
 LABEL = "FantasyPros (ECR + ADP + Auction $)"
@@ -147,6 +147,55 @@ def _fetch_rankings(season, scoring, slug):
         LAST_NOTES.append("no 'var adpData' payload at %s -- ADP column is empty" % url)
 
     return ecr, players, adp_by_id
+
+
+# Weekly and rest-of-season ECR (in-season). Probed 2026-09-27:
+#   half-point-ppr-{rb,wr,te,flex}.php, qb.php, k.php, dst.php carry the same
+#   `var ecrData` blob with "week": 3, "ranking_type_name": "weekly". Per player:
+#   rank_ecr, rank_ave, rank_std, rank_min, rank_max, pos_rank, tag
+#   ("start"/"sit"...), start_sit_grade ("A+"), r2p_pts (FantasyPros'
+#   ranks-to-points) and player_opponent. NO tier field on weekly pages.
+#   ros-half-point-ppr-overall.php is the rest-of-season equivalent.
+#   Not fenced; robots.txt asks for a 5 s crawl delay.
+WEEK_PAGES = {"QB": "qb.php", "RB": "half-point-ppr-rb.php", "WR": "half-point-ppr-wr.php",
+              "TE": "half-point-ppr-te.php", "K": "k.php", "DEF": "dst.php"}
+ROS_PAGE = "ros-half-point-ppr-overall.php"
+_FP_BASE = "https://www.fantasypros.com/nfl/rankings/"
+_ECR_KEYS = ("rank_ecr", "rank_ave", "rank_std", "rank_min", "rank_max", "pos_rank", "tag",
+             "start_sit_grade", "r2p_pts", "tier", "player_opponent")
+
+
+def _ecr_rows(html, url):
+    raw = _extract_js_literal(html, "var ecrData", "{")
+    if not raw:
+        raise RuntimeError("FantasyPros: no 'var ecrData' payload at %s" % url)
+    ecr = json.loads(raw)
+    out = []
+    for p in ecr.get("players") or []:
+        r = {k: p.get(k) for k in _ECR_KEYS if p.get(k) is not None}
+        r.update(fp_id=str(p.get("player_id")), name=p.get("player_name"),
+                 pos=norm_pos(p.get("player_position_id")), team=p.get("player_team_id"))
+        out.append(r)
+    return {"week": ecr.get("week"), "type": ecr.get("ranking_type_name"),
+            "experts": ecr.get("total_experts"), "players": out}
+
+
+def _feed_get(url, key, ttl, feed):
+    # In-season pages go through feeds.common: repo-level cache, stale-if-error,
+    # and the cache-only mode the request path uses.
+    from sleeper_auction.feeds import common
+    return common.fetch_text(url, key, ttl, feed=feed)
+
+
+def fetch_week_ecr(pos, ttl=6 * 3600):
+    """One position's weekly ECR (a rank signal, not points)."""
+    url = _FP_BASE + WEEK_PAGES[pos]
+    return _ecr_rows(_feed_get(url, "fp-week-ecr-%s" % pos, ttl, "fantasypros.week"), url)
+
+
+def fetch_ros(ttl=12 * 3600):
+    url = _FP_BASE + ROS_PAGE
+    return _ecr_rows(_feed_get(url, "fp-ros-ecr", ttl, "fantasypros.ros"), url)
 
 
 def _fetch_auction(season, scoring, dw_code, teams, budget):
