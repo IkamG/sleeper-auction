@@ -272,6 +272,11 @@ scripted caller wants the whole answer in one response.
       valuation.py    VORP -> auction dollars, tiers, confidence
       sleeper.py      Sleeper API client (drafts, picks, budgets, user lookup)
       sources/        ranking-source adapters
+      feeds/          in-season data feeds (see "In-season data feeds")
+        common.py     cached fetch (gunzip, stale-if-error), status, parallel, snapshots
+        ids.py        ID crosswalk: gsis/espn/pfr/cbs/... -> Sleeper id
+        scoring.py    league scoring_settings -> points(stat line)
+    tests/            unittest, network-free (fixtures in tests/fixtures)
     run.sh            launcher; picks the best available interpreter
     cache/            on-disk HTTP cache (gitignored)
 
@@ -282,6 +287,11 @@ Every module runs standalone:
     python3 -m sleeper_auction.sitstart --draft <id> --me <n> --week <n> [--no-ai]
     python3 -m sleeper_auction.waivers  --draft <id> --me <n> --week <n> [--limit 25]
     python3 -m sleeper_auction.lookahead --draft <id> --me <n> [--limit 20]
+    python3 -m sleeper_auction.feeds.ids --probe     # crosswalk sizes per id kind
+
+Tests (offline, stdlib `unittest`, run on Python 3.9 and 3.14):
+
+    python3 -m unittest discover -s tests
 
 ### HTTP API
 
@@ -299,6 +309,8 @@ Every module runs standalone:
     GET  /api/waivers?draft=&me=&week=     waiver wire JSON
     GET  /api/user/<username>/drafts       find drafts by Sleeper username
     GET  /api/values                       the valued player pool
+    GET  /api/feeds                        freshness, errors and ID-join rates
+                                           for every in-season feed
     POST /api/refresh                      rebuild the source pool
 
 ---
@@ -328,6 +340,30 @@ source the board cannot run without, and the adapter retries with backoff,
 serves a stale cache when the API is unreachable, and re-requests per position
 if the combined call fails. `ffc` stays inline; the adapter returns the same
 players.
+
+---
+
+## In-season data feeds
+
+`feeds/` holds the data the weekly tools use beyond Sleeper's own projections.
+The draft-ranking `sources/` keep their one-shape contract; feeds have
+different shapes and cadences. Rules every feed follows:
+
+- **Optional and wrapped.** A failed feed degrades that one signal. Every page
+  renders all of its existing numbers with every feed down. A feed whose live
+  fetch fails serves its last cached copy, whatever its age, and is marked
+  stale in `/api/feeds`.
+- **IDs over names.** `feeds/ids.py` maps every external ID to a Sleeper ID,
+  built from Sleeper's player DB and filled from the
+  [DynastyProcess](https://github.com/dynastyprocess/data) ID table (the only
+  source of PFR, CBS, NFL.com and KeepTradeCut IDs, and of GSIS IDs Sleeper
+  leaves blank). Names are a last resort, and an ambiguous name is dropped
+  rather than guessed. Hit, fallback and miss counts show in `/api/feeds`.
+- **League scoring.** `feeds/scoring.py` scores any stat line with the
+  league's own `scoring_settings` (TE premium and bonuses included), falling
+  back to standard half-PPR.
+- `FEEDS_DISABLED=props,news,...` switches feeds off (useful for checking the
+  degraded path). There is no config file.
 
 ---
 

@@ -971,6 +971,9 @@ class H(BaseHTTPRequestHandler):
                                       "text/plain; charset=utf-8")
                 return self._send(200, analyze.html_report(a),
                                   "text/html; charset=utf-8")
+            if path == "/api/feeds":
+                from sleeper_auction import feeds
+                return self._send(200, json.dumps(feeds.status(), default=str))
             if path == "/api/values":
                 return self._send(200, json.dumps({"players": ensure_pool()[:400]}))
             return self._send(404, json.dumps({"error": "not found"}))
