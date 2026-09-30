@@ -756,7 +756,8 @@ def start_job(job_id, work, render):
 
 def current_week(q=None):
     """?week= when given, else the current NFL week from Sleeper's state/nfl
-    (clamped to 1-18, so preseason reads as week 1). Pages used to default to
+    (clamped to 1-18, so preseason reads as week 1). Last week's
+    results stay one click away in the week selector. Pages used to default to
     week 1 all season."""
     w = (q or {}).get("week")
     if w and str(w).isdigit():
@@ -764,7 +765,10 @@ def current_week(q=None):
     try:
         from sleeper_auction import sleeper as sd
         st = sd.nfl_state() or {}
-        return max(1, min(18, int(st.get("display_week") or st.get("week") or 1)))
+        # "week", not "display_week": Sleeper advances "week" after Monday
+        # night while display_week lags until later in the week, and from
+        # Tuesday the decisions (and the markets) are for the new week.
+        return max(1, min(18, int(st.get("week") or st.get("display_week") or 1)))
     except Exception:
         return 1
 
