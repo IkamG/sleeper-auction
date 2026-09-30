@@ -18,6 +18,30 @@ import unicodedata
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+def _load_dotenv(path=None):
+    """Read KEY=VALUE lines from the repo's .env (git-ignored) into os.environ.
+
+    Values already set in the environment win, so `export ODDS_API_KEY=...`
+    still overrides the file. Stdlib only: no python-dotenv.
+    """
+    path = path or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                ".env")
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k, v = k.strip(), v.strip().strip('"').strip("'")
+                if k and k not in os.environ:
+                    os.environ[k] = v
+    except OSError:
+        pass
+
+
+_load_dotenv()
+
 SEASON = "2026"
 CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
 # Project root on sys.path so `sources/` and `valuation.py` resolve no matter
@@ -774,6 +798,16 @@ class H(BaseHTTPRequestHandler):
         Useful mid-draft when a source was unreachable at startup: the board
         keeps serving the cached pool while this rebuilds it in place.
         """
+        if self.path.split("?")[0] == "/api/cache/clear":
+            qs = self.path.split("?", 1)[1] if "?" in self.path else ""
+            flags = dict(kv.split("=", 1) for kv in qs.split("&") if "=" in kv)
+            try:
+                from sleeper_auction.feeds import cache
+                out = cache.clear(ai=flags.get("ai") == "1", odds=flags.get("odds") == "1")
+                cache.refill()
+                return self._send(200, json.dumps(dict(out, ok=True)))
+            except Exception as e:
+                return self._send(500, json.dumps({"error": "clear failed", "detail": str(e)}))
         if self.path.split("?")[0] != "/api/refresh":
             return self._send(404, json.dumps({"error": "not found"}))
         try:

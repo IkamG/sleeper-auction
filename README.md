@@ -475,9 +475,10 @@ scoring. Anything without a market comes from Sleeper's projected stat line;
 `coverage` says how much of the number the markets supplied. Games that have
 kicked off are dropped: a live market prices the game state, not the player.
 
-Set the key once in your shell (it is never written to disk by the app):
+Put the key in a `.env` file at the repo root (git-ignored; the app reads it
+at startup, and an exported variable overrides it):
 
-    export ODDS_API_KEY=...        # optional; Kalshi works without it
+    ODDS_API_KEY=...               # optional; Kalshi works without it
 
 nflverse publishes only the **latest** practice status per player-week, so
 the Wednesday → Friday trajectory is built by snapshotting each fetch into

@@ -59,8 +59,29 @@ def rail_html(names=None):
                     % (html.escape(why, quote=True), cls, mark, html.escape(n),
                        ("%s rows · " % s["rows"]) if s.get("rows") is not None else "",
                        "cache " + _age(age) if age is not None else ""))
-    if not rows:
-        return ""
     return ("<div class='panel'><h3>Data</h3><div style='font-size:12px;line-height:1.6'>%s"
             "</div><div class='mut' style='font-size:11px'>full status: "
-            "<a href='/api/feeds'>/api/feeds</a></div></div>" % "".join(rows))
+            "<a href='/api/feeds'>/api/feeds</a></div>%s</div>" % ("".join(rows), CLEAR_UI))
+
+
+# Clear-cache control, shown in every page's Data panel. AI analyses and paid
+# Odds API responses are kept unless their boxes are ticked (feeds/cache.py).
+CLEAR_UI = """<div style='margin-top:9px;font-size:12px'>
+<button id='cc-btn' style='background:#21262d;color:#e6edf3;border:1px solid #30363d;
+border-radius:6px;padding:5px 10px;font:inherit;cursor:pointer'>Clear cache</button>
+<label class='mut' style='margin-left:6px'><input type='checkbox' id='cc-ai'> AI analyses</label>
+<label class='mut' style='margin-left:6px' title='Re-fetching a full slate costs about 90 of
+500 monthly credits'><input type='checkbox' id='cc-odds'> Odds API</label>
+<div id='cc-msg' class='mut' style='margin-top:5px'></div></div>
+<script>(function(){var b=document.getElementById('cc-btn');if(!b)return;
+b.onclick=function(){var ai=document.getElementById('cc-ai').checked,
+od=document.getElementById('cc-odds').checked,m=document.getElementById('cc-msg');
+if(!confirm('Clear cached data'+(ai?' and AI analyses':'')+(od?' and Odds API responses':'')
++'? The next load re-fetches everything and will be slow.'))return;
+b.disabled=true;m.textContent='Clearing...';
+fetch('/api/cache/clear?ai='+(ai?1:0)+'&odds='+(od?1:0),{method:'POST'})
+.then(function(r){return r.json()}).then(function(j){
+if(j.error){m.textContent='Failed: '+(j.detail||j.error);b.disabled=false;return;}
+m.textContent='Cleared '+j.files+' files ('+Math.round(j.bytes/1048576)+' MB). Reloading...';
+setTimeout(function(){location.reload()},800);})
+.catch(function(e){m.textContent='Failed: '+e;b.disabled=false;});};})();</script>"""
