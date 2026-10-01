@@ -228,7 +228,7 @@ def build_board(draft_id, roster_id, limit=15):
     res, errs = common.parallel({
         "rosters": lambda: common.fetch_json(
             "https://api.sleeper.app/v1/league/%s/rosters" % league_id,
-            "slp-rosters-faab-%s" % league_id, 600),
+            "slp-rosters-trades-%s" % league_id, 60),
         "ros": lambda: values.ros_points(season, week + 1, sc, cache_only=True,
                                          season_proj={s: p.get("proj") for s, p in byid.items()}),
         "tv": lambda: values.trade_values(lg, pool),
@@ -289,6 +289,9 @@ def build_board(draft_id, roster_id, limit=15):
         nw = {}
     sell = _sell_high(rosters[roster_id])
     return {"draft_id": draft_id, "roster_id": roster_id, "league_id": league_id,
+            # every roster, since a trade depends on the partner's roster too
+            "roster_fp": sitstart.roster_fp(*[[p["sid"] for p in pl]
+                                              for _, pl in sorted(rosters.items())]),
             "season": season, "week": week, "team_name": owners.get(roster_id, "me"),
             "owners": owners, "slots": slots,
             "my_lineup_ros": lineup(rosters[roster_id], slots)[0],
@@ -399,7 +402,7 @@ def ai_analyze(b, api_key=None, refresh=False):
     payload = json.dumps({k: b.get(k) for k in (
         "team_name", "week", "my_lineup_ros", "proposals", "value_asks", "my_need",
         "my_surplus", "opp_needs", "sell_high", "sources")}, default=str)
-    key = "trades-%s-w%s" % (b.get("roster_id"), b.get("week"))
+    key = "trades-%s-w%s-%s" % (b.get("roster_id"), b.get("week"), b.get("roster_fp"))
     return sitstart.cached_ai(
         key, lambda: sitstart.run_model(SYSTEM, payload, SCHEMA, api_key=api_key),
         refresh=refresh)

@@ -881,7 +881,10 @@ def build_slate(draft_id, roster_id, week):
             else:
                 tot += _final_proj(fd, x, info.get("pos") or (_cw_pos(x)), proj.get(x))[0] or 0.0
         opp_total = round(tot, 1)
+    lineup_fp = roster_fp([p["id"] for p in players],
+                          [p["id"] for p in players if p["starting"]])
     return {"draft_id": draft_id, "phase": phase, "locked_points": locked_pts,
+            "lineup_fp": lineup_fp,
             "opp_locked_points": round(opp_locked, 1),
             "live_projected": live_proj,
             "games_done": sum(1 for v in gs.values() if v.get("state") == "post") // 2,
@@ -1346,6 +1349,15 @@ AI_CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
                         "cache", "ai")
 
 
+def roster_fp(*groups):
+    """Short fingerprint of a roster (and lineup). Part of every AI cache key
+    and job id, so benching, starting, adding or dropping a player gets a
+    fresh analysis instead of the cached one for the old roster."""
+    import hashlib
+    body = "|".join(",".join(sorted(str(x) for x in (g or []))) for g in groups)
+    return hashlib.sha1(body.encode()).hexdigest()[:8]
+
+
 def cached_ai(key, work, refresh=False):
     """Cache a model result on disk forever, keyed by week and phase.
 
@@ -1449,8 +1461,9 @@ def ai_analyze(slate, pos, api_key=None, wrcb=None, refresh=False):
         "roster": [{k: v for k, v in p.items() if k != "id"}
                    for p in slate["players"]],
     }, default=str)
-    key = "sitstart-%s-%s-w%s-%s" % (slate.get("roster_id"), slate.get("season"),
-                                     slate.get("week"), slate.get("phase"))
+    key = "sitstart-%s-%s-w%s-%s-%s" % (slate.get("roster_id"), slate.get("season"),
+                                        slate.get("week"), slate.get("phase"),
+                                        slate.get("lineup_fp"))
     return cached_ai(key,
                      lambda: run_model(SYSTEM, user_json, SCHEMA, api_key=api_key,
                                        images=fetch_wrcb(wrcb)),

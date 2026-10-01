@@ -677,6 +677,7 @@ def build_board(draft_id, roster_id, week, limit=25):
             c["news"] = news[c["sleeper_id"]]
 
     return {"week": week, "league_id": league_id, "roster_id": roster_id,
+            "roster_fp": sitstart.roster_fp(mine_ids),
             "draft_id": draft_id,
             "team_name": next((t["owner"] for t in state["teams"]
                                if t["roster_id"] == roster_id), "me"),
@@ -837,7 +838,8 @@ def ai_analyze(board, api_key=None, refresh=False):
         "opp_budgets": board.get("opp_budgets"),
         "room_prices": board.get("room_prices"),
     }, default=str)
-    key = "waivers-%s-w%s" % (board.get("roster_id"), board.get("week"))
+    key = "waivers-%s-w%s-%s" % (board.get("roster_id"), board.get("week"),
+                                 board.get("roster_fp"))
     return sitstart.cached_ai(
         key, lambda: sitstart.run_model(SYSTEM, payload, SCHEMA, api_key=api_key),
         refresh=refresh)

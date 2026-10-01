@@ -905,7 +905,7 @@ class H(BaseHTTPRequestHandler):
                 ai = None
                 if not q.get("noai"):
                     rf = bool(q.get("refresh"))
-                    jid = "la-%s-%s" % (did, rid)
+                    jid = "la-%s-%s-%s" % (did, rid, lb.get("roster_fp"))
                     if rf:
                         with JOBS["lock"]:
                             JOBS["items"].pop(jid, None)
@@ -926,7 +926,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(
                     200, lookahead.html_report(
                         lb, ai,
-                        job_id=("la-%s-%s" % (did, rid))
+                        job_id=("la-%s-%s-%s" % (did, rid, lb.get("roster_fp")))
                         if job and job["status"] == "pending" else None),
                     "text/html; charset=utf-8")
             if path in ("/waivers", "/api/waivers"):
@@ -942,7 +942,7 @@ class H(BaseHTTPRequestHandler):
                 ai = None
                 if not q.get("noai"):
                     rf = bool(q.get("refresh"))
-                    jid = "wv-%s-%s-%s" % (did, rid, current_week(q))
+                    jid = "wv-%s-%s-%s-%s" % (did, rid, current_week(q), wb.get("roster_fp"))
                     if rf:
                         with JOBS["lock"]:
                             JOBS["items"].pop(jid, None)
@@ -963,7 +963,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(
                     200, waivers.html_report(
                         wb, ai,
-                        job_id=("wv-%s-%s-%s" % (did, rid, current_week(q)))
+                        job_id=("wv-%s-%s-%s-%s" % (did, rid, current_week(q), wb.get("roster_fp")))
                         if job and job["status"] == "pending" else None),
                     "text/html; charset=utf-8")
             if path in ("/sitstart", "/api/sitstart"):
@@ -986,7 +986,7 @@ class H(BaseHTTPRequestHandler):
                     rf = bool(q.get("refresh"))
                     # Phase in the job id so a pre-week read, a live Sunday read
                     # and the post-week retrospective are distinct analyses.
-                    jid = "ss-%s-%s-%s-%s" % (did, rid, wk, sl.get("phase"))
+                    jid = "ss-%s-%s-%s-%s-%s" % (did, rid, wk, sl.get("phase"), sl.get("lineup_fp"))
                     if rf:
                         with JOBS["lock"]:
                             JOBS["items"].pop(jid, None)
@@ -1008,7 +1008,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(
                     200, sitstart.html_report(
                         sl, ps, ai,
-                        job_id=("ss-%s-%s-%s-%s" % (did, rid, wk, sl.get("phase")))
+                        job_id=("ss-%s-%s-%s-%s-%s" % (did, rid, wk, sl.get("phase"), sl.get("lineup_fp")))
                         if job and job["status"] == "pending" else None),
                     "text/html; charset=utf-8")
             if path in ("/analysis", "/api/analysis"):
@@ -1034,7 +1034,7 @@ class H(BaseHTTPRequestHandler):
                 tb = trades.build_board(did, int(rid), int(q.get("limit") or 15))
                 job = None
                 ai = None
-                jid = "tr-%s-%s" % (did, rid)
+                jid = "tr-%s-%s-%s" % (did, rid, tb.get("roster_fp"))
                 if not q.get("noai"):
                     rf = bool(q.get("refresh"))
                     if rf:

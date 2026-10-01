@@ -442,6 +442,7 @@ def stash_board(draft_id, roster_id, limit=20):
                                  else "below the starting requirement"})
 
     return {"roster_id": roster_id, "league_id": league_id,
+            "roster_fp": sitstart.roster_fp(mine_ids),
             "team_name": next((t["owner"] for t in state["teams"]
                                if t["roster_id"] == roster_id), "me"),
             "stats_season": eff["season"], "stats_weeks": eff["weeks"],
@@ -586,7 +587,8 @@ def ai_analyze(board, api_key=None, refresh=False):
         "candidates": [{k: v for k, v in c.items() if k != "sleeper_id"}
                        for c in board["candidates"]],
     }, default=str)
-    key = "lookahead-%s-%s" % (board.get("roster_id"), board.get("stats_season"))
+    key = "lookahead-%s-%s-%s" % (board.get("roster_id"), board.get("stats_season"),
+                                  board.get("roster_fp"))
     return sitstart.cached_ai(
         key, lambda: sitstart.run_model(SYSTEM, payload, SCHEMA, api_key=api_key),
         refresh=refresh)
